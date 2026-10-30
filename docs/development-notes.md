@@ -479,11 +479,37 @@ Relay hop=2
 ### Known Limitations
 
 1. **No DIO1 interrupt**: Polling mode only, ~1ms latency per check
-2. **No duty cycle enforcement**: Does not track the 10% duty cycle limit for the 869.4–869.65 MHz band
+2. **Duty cycle = token bucket** (not the official's full non-blocking scheduler): the
+   budget is consumed/refilled in `send_pkt()` and a deficit blocks (in ≤500 ms
+   slices, watchdog + CLI kept alive) rather than deferring the TX via a
+   `next_tx_time` timestamp. Equivalent average-airtime behaviour; slightly
+   coarser timing.
 3. **No LBT (Listen Before Talk)**: Simple random backoff, not carrier sense
 4. **No encryption**: Packets are plaintext (MeshCore design choice)
 
 ---
+
+## RF Duty Cycle: Token Bucket (v1.14.0)
+
+EU 868 MHz duty-cycle compliance is a **token bucket**, matching the official
+`Dispatcher` (not a fixed per-packet silence):
+
+- **Window:** 1 hour (`DUTY_WINDOW_MS = 3 600 000 ms`).
+- **Bucket size (max budget):** `window × duty`, where `duty = dutycycle/100`.
+  At the 10 % default that is 360 000 ms (6 min) of airtime.
+- **Refill:** continuously at the duty rate — `budget += elapsed × dutycycle/100`,
+  capped at the max. So idle time tops the bucket back up.
+- **Consume:** each TX subtracts its *measured* on-air time (from a `millis()`
+  around `radio.transmit()`), clamped at 0.
+- **Gate:** before a TX, if the budget is below the estimated airtime, wait for
+  the deficit to refill (`wait = deficit × 100 / dutycycle`, in ≤500 ms slices).
+  Capped at `DUTY_SILENCE_MAX_MS` (30 s) as a safety.
+- **Boot:** the bucket starts **full**, so a freshly booted node can burst before
+  it's throttled — same as the official.
+- **Visibility:** `stats-core` reports `budget=<ms>` (the remaining budget).
+
+All math is integer fixed-point with 64-bit intermediates (no float), so it's
+newlib-nano safe. `dutycycle` 0 or ≥100 disables enforcement.
 
 ## newlib-nano Float printf Is a Silent No-op
 

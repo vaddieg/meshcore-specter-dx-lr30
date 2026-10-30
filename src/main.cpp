@@ -199,6 +199,16 @@ static uint32_t radio_airtime_ms = 200;   // estimated, set in radio_init()
 static bool     radio_ok         = false; // radio_init() has succeeded
 static uint32_t last_radio_retry = 0;     // degraded-mode retry timer
 
+// ─── Token-bucket RF duty cycle (matches the MeshCore Dispatcher) ────────────
+// A budget of airtime (ms) refills continuously at the duty rate over a 1-hour
+// window. Bursts up to the bucket are allowed; each TX consumes its measured
+// airtime and is gated until enough budget is available. This is far smoother
+// than a fixed per-packet silence: idle time tops the bucket up, so a burst
+// after idle is fine, and the average airtime over the window stays ≤ duty.
+#define DUTY_WINDOW_MS 3600000UL          // 1 h window (MeshCore standard)
+static uint32_t tx_budget_ms       = 0;   // available airtime budget (ms)
+static uint32_t last_budget_update = 0;   // last refill timestamp (ms)
+
 // ─── DIO1 interrupt flag ─────────────────────────────────────────────────────
 // Set by the DIO1 ISR when the radio raises an interrupt (RxDone).
 // The main loop polls this flag instead of continuously reading getIrqFlags().
@@ -288,7 +298,45 @@ static int build_advert(uint8_t* buf) {
 // Direct packets are routed without a delay. See getDirectRetransmitDelay(pkt)
 static bool no_delay = false;
 
-// ─── Send a packet (with RF switch + EU duty-cycle enforcement) ──────────────
+// ─── Token-bucket duty-cycle helpers ────────────────────────────────────────
+// Refill the budget for the elapsed time since the last update.
+// Integer fixed-point (no float); 64-bit intermediates for the window math.
+static void updateTxBudget(void) {
+    uint32_t now = millis();
+    uint32_t elapsed = now - last_budget_update;
+    if (elapsed == 0) return;
+    if (cfg.dutycycle > 0 && cfg.dutycycle < 100) {
+        tx_budget_ms += (uint32_t)(((uint64_t)elapsed * cfg.dutycycle) / 100);
+        uint32_t max_budget = (uint32_t)(((uint64_t)DUTY_WINDOW_MS * cfg.dutycycle) / 100);
+        if (tx_budget_ms > max_budget) tx_budget_ms = max_budget;
+    }
+    last_budget_update = now;
+}
+
+// Block (keeping the watchdog + CLI alive) until the budget covers `airtime` ms,
+// capped at DUTY_SILENCE_MAX_MS so a pathological setting can't hang the node.
+static void duty_wait(uint32_t airtime) {
+    if (cfg.dutycycle <= 0 || cfg.dutycycle >= 100) return;   // unlimited
+    uint32_t waited = 0;
+    while (tx_budget_ms < airtime && waited < DUTY_SILENCE_MAX_MS) {
+        uint32_t needed = airtime - tx_budget_ms;
+        uint32_t step   = (uint32_t)(((uint64_t)needed * 100) / cfg.dutycycle); // wall-ms to refill
+        if (step < 20)  step = 20;
+        if (step > 500) step = 500;      // poll in ≤500 ms slices
+        uint32_t t0 = millis();
+        while (millis() - t0 < step) { IWatchdog.reload(); cli_poll(); delay(10); }
+        waited += step;
+        updateTxBudget();
+    }
+}
+
+// Public accessor for the CLI — refreshes the budget, then reports it
+uint32_t get_tx_budget_ms(void) {
+    updateTxBudget();
+    return tx_budget_ms;
+}
+
+// ─── Send a packet (with RF switch + token-bucket duty-cycle gating) ─────────
 static bool send_pkt(const uint8_t* buf, int len) {
     rf_idle();
 
@@ -301,20 +349,21 @@ static bool send_pkt(const uint8_t* buf, int len) {
         delay(300 + (millis() % 500));
     }
 
+    // Token bucket: ensure the budget covers this TX before transmitting
+    updateTxBudget();
+    duty_wait(radio_airtime_ms);
+
     rf_tx();
-    int state = radio.transmit(const_cast<uint8_t*>(buf), len);
+    uint32_t tx0   = millis();
+    int      state = radio.transmit(const_cast<uint8_t*>(buf), len);
+    uint32_t airtime = millis() - tx0;   // actual on-air time
     rf_idle();
 
-    // EU duty cycle: after each TX, silent period ≈ on-air × (100/duty − 1)
+    // Consume the measured airtime from the budget
     if (state == RADIOLIB_ERR_NONE && cfg.dutycycle > 0 && cfg.dutycycle < 100) {
-        uint32_t silence = radio_airtime_ms * (100UL / cfg.dutycycle - 1UL);
-        if (silence > DUTY_SILENCE_MAX_MS) silence = DUTY_SILENCE_MAX_MS;
-        uint32_t t0 = millis();
-        while (millis() - t0 < silence) {
-            IWatchdog.reload();
-            cli_poll();   // stay responsive to admin during enforced silence
-            delay(10);
-        }
+        updateTxBudget();
+        if (tx_budget_ms > airtime) tx_budget_ms -= airtime;
+        else                        tx_budget_ms = 0;
     }
     return (state == RADIOLIB_ERR_NONE);
 }
@@ -496,6 +545,10 @@ void setup(void) {
     Serial1.print("Radio init...");
     if (radio_init()) {
         radio_ok = true;
+        // Start the duty-cycle budget full (as the official Dispatcher does)
+        last_budget_update = millis();
+        tx_budget_ms = (cfg.dutycycle > 0 && cfg.dutycycle < 100) ?
+            (uint32_t)(((uint64_t)DUTY_WINDOW_MS * cfg.dutycycle) / 100) : DUTY_WINDOW_MS;
         Serial1.println(" OK");
         digitalWrite(PIN_LED, LED_OFF);   // OFF, ready
     } else {

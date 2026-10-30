@@ -250,11 +250,14 @@ static void cmd_neighbors(void) {
     }
 }
 
+extern uint32_t get_tx_budget_ms(void);
+
 static void cmd_stats_core(void) {
-    char buf[80];
-    snprintf(buf, sizeof(buf), "uptime=%lus name=%s duty=%u%% loop.detect=%s",
+    char buf[100];
+    snprintf(buf, sizeof(buf), "uptime=%lus name=%s duty=%u%% budget=%lums loop.detect=%s",
              (unsigned long)(millis() / 1000), cfg.name,
-             (unsigned)cfg.dutycycle, cfg.loop_detect ? "on" : "off");
+             (unsigned)cfg.dutycycle, (unsigned long)get_tx_budget_ms(),
+             cfg.loop_detect ? "on" : "off");
     out(buf);
 }
 

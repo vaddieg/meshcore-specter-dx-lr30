@@ -24,6 +24,17 @@ real app's parser.
   while down). Fix the setting over serial and the radio recovers without a
   reflash.
 
+### Improved
+- **Token-bucket RF duty cycle** (was a fixed per-packet silence). Matches the
+  official MeshCore `Dispatcher`: a budget of airtime (ms) refills continuously
+  at the `dutycycle` rate over a 1-hour window (3 600 000 ms). Bursts up to the
+  bucket are allowed; each TX consumes its *measured* airtime and is gated until
+  enough budget is available (the wait is budget-deficit based, not a fixed
+  `airtime × (100/duty−1)`). Idle time tops the bucket up, so a burst after idle
+  is fine and the average airtime over the window stays ≤ duty. Integer
+  fixed-point (no float); the remaining budget is visible via `stats-core`
+  (`budget=<ms>`). The bucket starts full at boot.
+
 ### Fixed
 - **`set radio` rejected every valid LoRa bandwidth** — the BW check bounds
   were `7–50 kHz` (micro `7000000–50000000`), so real bandwidths (62.5/125/

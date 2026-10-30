@@ -229,7 +229,7 @@ OK
 | `advert.zerohop` | `OK` | zero-hop ADVERT + 5×1 s discovery burst |
 | `neighbors` | `AABB:<ts>:<snr*4>` lines | 8 most recent adverts heard |
 | `discover.neighbors` | `OK` | discovery burst |
-| `stats-core` | uptime/name/duty/loop | |
+| `stats-core` | uptime/name/duty/budget/loop | `budget=` = remaining duty-cycle budget (ms) |
 | `stats-packets` | rx/relay/drop/advert counters | |
 | `log` | last 20 diagnostic lines | console is silent by default; this is how you read RX/relay/drop/ADVERT/ALIVE lines |
 | `log clear` | `OK` | empty the diagnostic buffer |
@@ -355,7 +355,7 @@ Without the pins defined, use the physical BOOT0+RESET button sequence
   `flood.advert.interval`, `advert.interval`, `repeat`, `loop.detect`,
   `txdelay`, `direct.txdelay`, `dutycycle`, `flood.max`.
   Also: flash prefs page (0x0801F000, magic+CRC16), 8-slot neighbor
-  cache, EU duty-cycle silence after each TX, `set repeat off` gate,
+  cache, token-bucket duty cycle (see development-notes), `set repeat off` gate,
   `flood.max` hop gate, `loop.detect` gate, timestamp re-sync via
   `time`, discovery burst (5× 1 s zero-hop adverts).
   Notes: `set tx`/`set radio`/`set freq` persist + reboot to apply
