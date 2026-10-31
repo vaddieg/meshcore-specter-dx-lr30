@@ -65,13 +65,12 @@ flowchart LR
 
 ## Bootloader Access
 
-The CH340 drives a host-controlled auto-DFU circuit:
-**DTR# → Q1 (S8050) → NRST** and **RTS# → Q2 (S8550) → BOOT0**
-(CH340 outputs are active-low vs host bits, so `rts=1` arms BOOT0 and a
-`dtr 1→0→1` pulse resets). Bootloader entry is therefore possible in
-software — see [flashing.md, DTR/RTS auto-DFU](flashing.md#dtrrts-auto-dfu-headless)
-for the exact `stm32flash -i` sequence and the host-driver caveats.
-The physical buttons always work:
+Bootloader entry over USB (DTR/RTS) is **not possible** on this board —
+the CH340C's DTR#/RTS# outputs are unconnected and the auto-DFU transistor
+circuit from some DX-LR30 schematics is absent (no transistors, no pads).
+Tested to exhaustion, see
+[flashing.md](flashing.md#programmatic-bootloader-entry-over-usb-not-possible).
+Use the physical buttons (or SWD, see below):
 
 ```mermaid
 sequenceDiagram
@@ -92,9 +91,25 @@ sequenceDiagram
 ```
 
 > **Note:** PB12 (the "KEY" button) is a plain user IO and is **not**
-> connected to BOOT0 — driving it can never select the bootloader.
-> Bootloader selection on this board is only via the DTR/RTS circuit above
-> or the physical BOOT0 button.
+> connected to BOOT0 — driving it from firmware cannot select the
+> bootloader. Pressing KEY has occasionally been observed to drop the board
+> into the bootloader (likely noise coupling into the BOOT0 net); unreliable,
+> do not depend on it.
+
+### SWD Debug Header (headless flashing)
+
+The board exposes a 4-pin SWD header, labeled **V G D C**:
+
+| Pin | Net | MCU pin |
+|-----|-----|---------|
+| V | 3V3 | — |
+| G | GND | — |
+| D | SWDIO | PA13 |
+| C | SWCLK | PA14 |
+
+An ST-Link V2 on these 4 pins gives fully headless flashing
+(`st-flash write firmware.bin 0x08000000`) with no bootloader entry at all —
+see [flashing.md, Headless flashing: SWD](flashing.md#headless-flashing-swd-recommended).
 
 ### STM32F103 Bootloader Specs
 

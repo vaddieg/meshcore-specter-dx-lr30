@@ -2,11 +2,13 @@
 
 ## Overview
 
-The DX-LR30 uses an **STM32F103C8T6** with a factory UART bootloader accessible
-via BOOT0 pin. The board has a host-driven **DTR/RTS auto-DFU circuit**
-(same idea as the Arduino auto-reset), so bootloader entry is possible
-fully in software — see [DTR/RTS auto-DFU](#dtrrts-auto-dfu-headless).
-Until that is confirmed on your unit, the physical buttons always work.
+The DX-LR30 uses an **STM32F103C8T6** with a factory UART bootloader
+accessible via the BOOT0 pin. Bootloader entry over USB (DTR/RTS) is
+**not possible** on this board — see
+[Programmatic bootloader entry over USB: NOT possible](#programmatic-bootloader-entry-over-usb-not-possible).
+Entry is via the **physical buttons** (UART flashing) or, for fully
+headless operation, via the **SWD header** with an ST-Link V2 — see
+[Headless flashing: SWD](#headless-flashing-swd-recommended).
 
 ```mermaid
 flowchart TD
@@ -247,64 +249,88 @@ to halt. Verify all 8 SPI/control pins are intact.
 
 ---
 
-## DTR/RTS auto-DFU (headless)
+## Programmatic bootloader entry over USB: NOT possible
 
-The schematic shows a classic host-driven auto-DFU circuit on the CH340:
+**Verdict (tested to exhaustion, 2026-10-31):** the DX-LR30 cannot be put
+into the ROM bootloader from the host over USB. Do not spend time on DTR/RTS
+sequences again.
 
-| Transistor       | Driven by         | Controls                        | Effect                        |
-|------------------|-------------------|---------------------------------|-------------------------------|
-| Q1 (S8050, NPN)  | DTR# → R16 (1K)   | NRST (R15 10K pull-up + D1)     | DTR# HIGH → NRST LOW (reset)  |
-| Q2 (S8550, PNP)  | RTS# → R17 (1K)   | BOOT0 (R19 10K pull-down)       | RTS# LOW → BOOT0 HIGH (bootloader) |
+Evidence:
 
-The CH340's DTR#/RTS# outputs are active-low with respect to the host
-termios bits, which translates to:
+| Test | Host / driver | Result |
+|------|---------------|--------|
+| pyserial full polarity sweep (`rts` 0/1 × `dtr` pulse both shapes, 100–500 ms holds) | Linux, real `ch341-uart` kernel driver | no reset edge at all |
+| same, plus port open/close release tricks | Linux, `ch341-uart` | no reset edge |
+| same sweeps (incl. swapped DTR↔RTS role hypothesis) | macOS, generic CDC driver | no reset edge (macOS driver itself suspect — see note) |
+| `stm32flash -i` GPIO-sequence matrix, 9 sequences (entry arms, pulses, long holds, swapped) | Linux, `ch341-uart` | `Failed to init device` |
+| firmware `dfu` (PB12/KEY line + software reset) | both | reboots into the **app** — PB12 is not the BOOT0 net |
 
-- **host `rts = 1`** → RTS# LOW → Q2 conducts → **BOOT0 armed (HIGH)**
-- **host `dtr: 1 → 0 → 1`** → DTR# HIGH while deasserted → Q1 conducts →
-  **NRST pulled LOW, then released = reset pulse**
+Hardware findings that explain it:
 
-Entry: `rts=1`, then a DTR falling pulse (hold ≥ 100 ms). Exit: `rts=0`,
-same DTR pulse → boots the application.
+- The board's USB-serial chip is a **CH340C** (marking e.g. `340XF07`).
+- There are **no transistors** on the board and **no unpopulated pads** for
+  them — the DTR/RTS auto-DFU circuit shown in some DX-LR30 schematics
+  (Q1→NRST, Q2→BOOT0) does not exist on this hardware. The CH340C's DTR#/RTS#
+  outputs are unconnected.
+- BOOT0 is a **dedicated MCU pin** (the C8T6 LQFP48 does not bring out PB2);
+  it is reachable only via the BOOT0 button.
 
-### Why the old "DTR/RTS doesn't work" note was wrong
+> **KEY button (PB12):** PB12 is a plain user I/O and is *not* wired to
+> BOOT0 — driving it from firmware cannot select the bootloader. However,
+> pressing the KEY button has been observed to occasionally drop the board
+> into the bootloader, most likely noise/interference coupling into the
+> BOOT0 net. Treat this as an unreliable curiosity, not a method.
 
-The earlier failed tests used sequences that could not work with this circuit:
+> **macOS note:** on macOS the CH340 is served by Apple's generic CDC-ACM
+> `usb.serial` DriverKit driver, which does not reliably propagate DTR/RTS to
+> the chip pins. DTR/RTS tests on macOS are inconclusive; Linux with the
+> `ch341` kernel driver is the only valid testbed — and there the lines are
+> simply not connected.
 
-| Old test | What it actually did |
-|----------|----------------------|
-| `stm32flash -i rts,-dtr` | Armed BOOT0, then drove DTR low and **never released it → MCU held in reset forever** (a timeout is the *expected* result) |
-| `stm32flash -i dtr,-rts` | No reset edge at all |
-
-The schematic-derived sequence has not been properly tested yet.
-
-### Flashing (once the sequence is confirmed)
-
-```bash
-PORT=/dev/ttyUSB0   # Linux, real ch341 driver required
-FW=.pio/build/specter/firmware.bin
-
-stm32flash -i ',rts,-dtr,,,dtr,,,,:-rts,dtr,-dtr,,,dtr,,,,' \
-    -w "$FW" -v -b 57600 "$PORT"
-```
-
-- Entry sequence: settle, `rts=1` (arm BOOT0), DTR falling pulse (reset),
-  settle → ROM bootloader at 57600 8E1.
-- Exit sequence: `rts=0` (disarm), DTR pulse → MCU boots the new app.
-- Or interactively: `.flashenv/bin/python tools/probe_dtr_rts.py $PORT`
-  sweeps the polarities and reports which one gets the bootloader ACK.
-
-> **Host driver caveat:** the sequence must be tested on Linux with the real
-> `ch341` kernel driver. On macOS the CH340 is served by Apple's generic
-> CDC-ACM `usb.serial` DriverKit driver, which is known not to reliably
-> propagate DTR/RTS to the CH340's pins — DTR/RTS tests there are
-> inconclusive (verified: no reset edge reaches the MCU from macOS).
-
-> **If the Linux test still times out**, the unit may differ from the
-> schematic: check the CH340 part marking (CH340G has DTR#/RTS# pins;
-> CH340C/clone variants often do not bring them out) and whether Q1/Q2 are
-> populated. A multimeter on the NRST net while pulsing DTR settles it.
+Use the physical buttons, or better, SWD (below).
 
 ---
+
+## Headless flashing: SWD (recommended)
+
+The board exposes a 4-pin SWD debug header labeled **V G D C**:
+
+| Pin | Net | MCU |
+|-----|-----|-----|
+| V | 3V3 | — |
+| G | GND | — |
+| D | SWDIO | PA13 |
+| C | SWCLK | PA14 |
+
+With an **ST-Link V2** (cheap clones work) on those 4 pins, flashing is fully
+headless — no buttons, no bootloader entry, no DTR/RTS, works even if the
+flash content is broken:
+
+```bash
+# probe sanity check
+st-info
+
+# flash + reset (ST-Link utility, or OpenOCD/pyOCD)
+st-flash write .pio/build/specter/firmware.bin 0x08000000
+```
+
+OpenOCD equivalent:
+
+```bash
+openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
+  -c "program .pio/build/specter/firmware.bin 0x08000000 verify reset"
+```
+
+Or build with PlatformIO and upload over ST-Link by switching the env to
+`upload_protocol = stlink` + `upload_port = /dev/stlink` (Linux).
+
+> Arduino UNO/Mega can be turned into an SWD master (JTAG-MKII or CMSIS-DAP
+> AVR builds), but the UNO's 5 V I/O is **not** compatible with the F103's
+> SWD pins without level shifting — an ST-Link V2 clone (~$10) is the sane
+> option.
+
+---
+
 
 ## Physical buttons (always works)
 

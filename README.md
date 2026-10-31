@@ -54,7 +54,8 @@ flowchart LR
 |-----------|------|-------|
 | MCU | STM32F103C8T6 | 72 MHz Cortex-M3, 64KB Flash, 20KB RAM |
 | Radio | SX1262 | Sub-GHz LoRa, up to +22 dBm |
-| USB-Serial | CH340 | Admin CLI @115200 · bootloader via BOOT0+RESET buttons |
+| USB-Serial | CH340 (CH340C) | Admin CLI @115200 · ROM bootloader via BOOT0+RESET buttons (DTR/RTS entry not wired) |
+| SWD header | V G D C = 3V3/GND/SWDIO (PA13)/SWCLK (PA14) | Headless flashing with an ST-Link V2 |
 | LED | PB11 | Active HIGH — 1 blink = RX · 2 fast blinks = relay · solid = ADVERT TX |
 
 ### Pin Map
@@ -240,8 +241,12 @@ firmware image.
 
 ## Flashing
 
-The DX-LR30's CH340 USB-serial chip does **not** support automatic bootloader
-entry via DTR/RTS in software. Use the **physical buttons**.
+**Programmatic bootloader entry over USB is not possible on this board**
+(the CH340's DTR/RTS lines are unconnected — tested to exhaustion,
+see [docs/flashing.md](docs/flashing.md#programmatic-bootloader-entry-over-usb-not-possible)).
+For buttonless/headless flashing use the board's **SWD header** with an
+[ST-Link V2](#headless-flashing-swd-recommended); otherwise use the
+**physical buttons**.
 
 ```mermaid
 sequenceDiagram
@@ -283,6 +288,28 @@ stm32flash \
 ```
 
 > ⚠️ **CRITICAL:** Use `-b 57600` (not 115200) on this board. See [docs/development-notes.md](docs/development-notes.md#critical-stm32-bootloader-baud-rate) for why.
+
+> **KEY button:** pressing it occasionally drops the board into the
+> bootloader (noise on the BOOT0 net) — unreliable, don't depend on it.
+
+### Headless flashing: SWD (recommended)
+
+The board has a 4-pin SWD header labeled **V G D C** = 3V3, GND, SWDIO
+(PA13), SWCLK (PA14). With an **ST-Link V2** (cheap clones work) on those
+pins, flashing is fully headless — no buttons, no bootloader entry:
+
+```bash
+st-flash write .pio/build/specter/firmware.bin 0x08000000
+```
+
+Or OpenOCD:
+
+```bash
+openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
+  -c "program .pio/build/specter/firmware.bin 0x08000000 verify reset"
+```
+
+(PlatformIO: set `upload_protocol = stlink`, `upload_port = /dev/stlink`.)
 
 ---
 

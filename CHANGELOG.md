@@ -51,6 +51,13 @@ real app's parser.
 - **CH340 USB quirk:** after a CLI `reboot`, the Mac-side USB-serial link
   drops and needs a cable power-cycle to re-establish. The device reboots
   fine underneath and all settings persist across the reboot (verified).
+- **Bootloader entry over USB is not possible** on the DX-LR30: the CH340C's
+  DTR/RTS outputs are unconnected (no auto-DFU circuit on this hardware),
+  verified with pyserial and `stm32flash -i` sweeps on Linux (real ch341
+  driver). Headless flashing: use the 4-pin SWD header (**V G D C** =
+  3V3/GND/SWDIO PA13/SWCLK PA14) with an **ST-Link V2** — see README and
+  `docs/flashing.md`. Pressing the KEY button occasionally drops the board
+  into the bootloader (noise on BOOT0) — unreliable, not a method.
 
 ---
 
