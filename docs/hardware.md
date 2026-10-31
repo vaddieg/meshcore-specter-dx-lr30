@@ -65,9 +65,13 @@ flowchart LR
 
 ## Bootloader Access
 
-The CH340 on this board **cannot** toggle BOOT0 or NRST via DTR/RTS in
-software (tested exhaustively, all combinations fail). Use the physical
-buttons:
+The CH340 drives a host-controlled auto-DFU circuit:
+**DTR# → Q1 (S8050) → NRST** and **RTS# → Q2 (S8550) → BOOT0**
+(CH340 outputs are active-low vs host bits, so `rts=1` arms BOOT0 and a
+`dtr 1→0→1` pulse resets). Bootloader entry is therefore possible in
+software — see [flashing.md, DTR/RTS auto-DFU](flashing.md#dtrrts-auto-dfu-headless)
+for the exact `stm32flash -i` sequence and the host-driver caveats.
+The physical buttons always work:
 
 ```mermaid
 sequenceDiagram
@@ -87,10 +91,10 @@ sequenceDiagram
     Note over STM: Listening on USART1<br/>57600 8E1 · waiting for 0x7F
 ```
 
-> **Programmatic entry (TODO):** if the board's BOOT0 and RESET lines
-> are also routed to free GPIOs, SPECTER ≥ 1.2.1 can enter the bootloader
-> itself via the CLI `dfu` command (build with `-D DFU_BOOT0_PIN=.. -D
-> DFU_RST_PIN=..`). See [cli.md §3.5](cli.md#35-flashing-without-buttons-optional).
+> **Note:** PB12 (the "KEY" button) is a plain user IO and is **not**
+> connected to BOOT0 — driving it can never select the bootloader.
+> Bootloader selection on this board is only via the DTR/RTS circuit above
+> or the physical BOOT0 button.
 
 ### STM32F103 Bootloader Specs
 

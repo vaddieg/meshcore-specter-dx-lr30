@@ -3,12 +3,10 @@
 ## Overview
 
 The DX-LR30 uses an **STM32F103C8T6** with a factory UART bootloader accessible
-via BOOT0 pin. The CH340 USB-serial chip **cannot** control BOOT0 or NRST in
-software on this board, physical button interaction is required.
-
-> **Shortcut (optional):** if BOOT0/RESET are also routed to free GPIOs,
-> firmware ≥ 1.2.1 can enter the bootloader itself via the CLI `dfu`
-> command — see [cli.md §3.5](cli.md#35-flashing-without-buttons-optional).
+via BOOT0 pin. The board has a host-driven **DTR/RTS auto-DFU circuit**
+(same idea as the Arduino auto-reset), so bootloader entry is possible
+fully in software — see [DTR/RTS auto-DFU](#dtrrts-auto-dfu-headless).
+Until that is confirmed on your unit, the physical buttons always work.
 
 ```mermaid
 flowchart TD
@@ -249,20 +247,69 @@ to halt. Verify all 8 SPI/control pins are intact.
 
 ---
 
-### Software bootloader entry (DTR/RTS) does NOT work
+## DTR/RTS auto-DFU (headless)
 
-All tested methods fail on this specific board:
+The schematic shows a classic host-driven auto-DFU circuit on the CH340:
 
-| Method | Result |
-|--------|--------|
-| `stm32flash -i rts,-dtr` | Timeout |
-| `stm32flash -i dtr,-rts` | Timeout |
-| pyserial DTR/RTS toggle | Timeout |
-| stm32loader `--swap-rts-dtr` | Timeout |
+| Transistor       | Driven by         | Controls                        | Effect                        |
+|------------------|-------------------|---------------------------------|-------------------------------|
+| Q1 (S8050, NPN)  | DTR# → R16 (1K)   | NRST (R15 10K pull-up + D1)     | DTR# HIGH → NRST LOW (reset)  |
+| Q2 (S8550, PNP)  | RTS# → R17 (1K)   | BOOT0 (R19 10K pull-down)       | RTS# LOW → BOOT0 HIGH (bootloader) |
 
-**Root cause:** The CH340 on the DX-LR30 is not wired to BOOT0 or NRST.
-This is by design, the original AT firmware never needed bootloader entry
-via software. **Always use the physical buttons.**
+The CH340's DTR#/RTS# outputs are active-low with respect to the host
+termios bits, which translates to:
+
+- **host `rts = 1`** → RTS# LOW → Q2 conducts → **BOOT0 armed (HIGH)**
+- **host `dtr: 1 → 0 → 1`** → DTR# HIGH while deasserted → Q1 conducts →
+  **NRST pulled LOW, then released = reset pulse**
+
+Entry: `rts=1`, then a DTR falling pulse (hold ≥ 100 ms). Exit: `rts=0`,
+same DTR pulse → boots the application.
+
+### Why the old "DTR/RTS doesn't work" note was wrong
+
+The earlier failed tests used sequences that could not work with this circuit:
+
+| Old test | What it actually did |
+|----------|----------------------|
+| `stm32flash -i rts,-dtr` | Armed BOOT0, then drove DTR low and **never released it → MCU held in reset forever** (a timeout is the *expected* result) |
+| `stm32flash -i dtr,-rts` | No reset edge at all |
+
+The schematic-derived sequence has not been properly tested yet.
+
+### Flashing (once the sequence is confirmed)
+
+```bash
+PORT=/dev/ttyUSB0   # Linux, real ch341 driver required
+FW=.pio/build/specter/firmware.bin
+
+stm32flash -i ',rts,-dtr,,,dtr,,,,:-rts,dtr,-dtr,,,dtr,,,,' \
+    -w "$FW" -v -b 57600 "$PORT"
+```
+
+- Entry sequence: settle, `rts=1` (arm BOOT0), DTR falling pulse (reset),
+  settle → ROM bootloader at 57600 8E1.
+- Exit sequence: `rts=0` (disarm), DTR pulse → MCU boots the new app.
+- Or interactively: `.flashenv/bin/python tools/probe_dtr_rts.py $PORT`
+  sweeps the polarities and reports which one gets the bootloader ACK.
+
+> **Host driver caveat:** the sequence must be tested on Linux with the real
+> `ch341` kernel driver. On macOS the CH340 is served by Apple's generic
+> CDC-ACM `usb.serial` DriverKit driver, which is known not to reliably
+> propagate DTR/RTS to the CH340's pins — DTR/RTS tests there are
+> inconclusive (verified: no reset edge reaches the MCU from macOS).
+
+> **If the Linux test still times out**, the unit may differ from the
+> schematic: check the CH340 part marking (CH340G has DTR#/RTS# pins;
+> CH340C/clone variants often do not bring them out) and whether Q1/Q2 are
+> populated. A multimeter on the NRST net while pulsing DTR settles it.
+
+---
+
+## Physical buttons (always works)
+
+Hold BOOT0, press RESET, release RESET, release BOOT0, then flash at
+57600 8E1.
 
 ---
 

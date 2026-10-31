@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """
 flash_stm32.py, Flash STM32F103 via UART bootloader (8E1 protocol)
-DX-LR30 CH340 wiring: DTR=BOOT0, RTS=NRST (active-low)
+
+DX-LR30 host-driven auto-DFU circuit (CH340, outputs active-low vs host bits):
+  Q1 NPN: DTR# -> NRST   (host DTR deasserted -> DTR# HIGH -> NRST pulled LOW)
+  Q2 PNP: RTS# -> BOOT0  (host RTS asserted    -> RTS# LOW  -> BOOT0 pulled HIGH)
+So: rts=True arms BOOT0, a dtr True->False->True pulse resets the MCU into
+the ROM bootloader. After flashing: rts=False, same dtr pulse -> boots app.
 """
 
 import sys, time, struct, serial
 
 PORT     = '/dev/ttyUSB0'
-BAUD     = 115200
-FW_PATH  = '/home/nexland/meshy/dx-lr30-fw/.pio/build/specter/firmware.bin'
+BAUD     = 57600
+FW_PATH  = '.pio/build/specter/firmware.bin'
 FLASH_BASE = 0x08000000
 CHUNK    = 256   # max 256 bytes per write
 
@@ -30,12 +35,14 @@ class STM32Bootloader:
                                timeout=2)
 
     def _boot_entry(self):
-        """Assert RESET with BOOT0 high → releases into bootloader."""
+        """Arm BOOT0 (rts=1) then pulse NRST (dtr 1->0->1) → bootloader."""
         print("Entering bootloader...")
-        self.s.dtr = True   # BOOT0 HIGH
-        self.s.rts = False  # NRST LOW (assert)
+        self.s.rts = True   # RTS# LOW  -> Q2 on  -> BOOT0 HIGH (arm)
+        self.s.dtr = True   # DTR# LOW  -> Q1 off  -> NRST released
+        time.sleep(0.1)
+        self.s.dtr = False  # DTR# HIGH -> Q1 on   -> NRST LOW (reset)
         time.sleep(0.3)
-        self.s.rts = True   # NRST HIGH (release) → MCU starts bootloader
+        self.s.dtr = True   # release reset → MCU starts in bootloader
         time.sleep(0.5)
         self.s.reset_input_buffer()
 
@@ -55,13 +62,15 @@ class STM32Bootloader:
             if resp and (resp[0] == ACK or (len(resp) > 1 and resp[1] == ACK)):
                 print("Bootloader init OK")
                 return True
-            # Retry with another pulse
+            # Retry with another reset pulse (BOOT0 stays armed)
             if attempt < 4:
                 print(f"  Retry {attempt+1}...")
-                self.s.rts = False
+                self.s.dtr = True
                 time.sleep(0.1)
-                self.s.rts = True
+                self.s.dtr = False
                 time.sleep(0.3)
+                self.s.dtr = True
+                time.sleep(0.5)
                 self.s.reset_input_buffer()
         return False
 
@@ -172,6 +181,15 @@ def main():
 
     print("Write complete! Starting app...")
     bl.go(FLASH_BASE)
+    # Disarm BOOT0, then reset → boots the app just written
+    print("Resetting to app (rts=0 + NRST pulse)...")
+    bl.s.rts = False
+    time.sleep(0.1)
+    bl.s.dtr = True
+    time.sleep(0.1)
+    bl.s.dtr = False
+    time.sleep(0.3)
+    bl.s.dtr = True
     bl.close()
     print("Done. Device is running new firmware.")
     print("Connect serial monitor at 115200 baud.")
