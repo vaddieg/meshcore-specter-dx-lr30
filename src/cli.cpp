@@ -6,6 +6,7 @@
  * MeshCore style: bare value / "OK" / "Err: ...".
  */
 #include "config.h"
+#include "acl.h"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -94,8 +95,20 @@ void cli_poll(void) {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+// Reply capture: when cap_buf is set (mesh-admin), replies go into the buffer
+// (message only, no "  -> " marker / CRLF — the mesh framing is different). When
+// it's NULL (USB), replies go to Serial1 with the config.app marker.
+static char* cap_buf = 0;
+static int   cap_len = 0, cap_size = 0;
+static void cap(const char* msg) {
+    int n = (int)strlen(msg);
+    if (cap_buf && cap_len + n < cap_size) { memcpy(cap_buf + cap_len, msg, n); cap_len += n; }
+    if (cap_buf) cap_buf[cap_len] = '\0';
+}
+
 // Reply: "  -> <text>\r\n"  (marker + CRLF required by config.meshcore.io)
 static void out(const char* s) {
+    if (cap_buf) { cap(s); return; }
     Serial1.print("  -> ");
     Serial1.print(s);
     Serial1.print("\r\n");
@@ -103,6 +116,7 @@ static void out(const char* s) {
 
 // Numeric reply (out() is const char*; this formats an unsigned long)
 static void out_num(unsigned long v) {
+    if (cap_buf) { char b[16]; snprintf(b, sizeof(b), "%lu", v); cap(b); return; }
     Serial1.print("  -> ");
     Serial1.print(v);
     Serial1.print("\r\n");
@@ -114,11 +128,13 @@ static void out_num(unsigned long v) {
 // firmware formats every get reply as "> <value>", so the full line is
 // "  -> > <value>". Without the "> " the app treats the var as unsupported.
 static void getv(const char* s) {
+    if (cap_buf) { cap(s); return; }
     Serial1.print("  -> > ");
     Serial1.print(s);
     Serial1.print("\r\n");
 }
 static void getv_num(unsigned long v) {
+    if (cap_buf) { char b[16]; snprintf(b, sizeof(b), "%lu", v); cap(b); return; }
     Serial1.print("  -> > ");
     Serial1.print(v);
     Serial1.print("\r\n");
@@ -126,6 +142,16 @@ static void getv_num(unsigned long v) {
 
 // One raw line of multi-line output, CRLF-terminated (used by `log`)
 static void raw_line(const char* s) {
+    if (cap_buf) {   // multi-line over mesh: join with a newline
+        int n = (int)strlen(s) + 1;   // s + '\n'
+        if (cap_len + n < cap_size) {
+            memcpy(cap_buf + cap_len, s, n - 1);
+            cap_buf[cap_len + n - 1] = '\n';
+            cap_len += n;
+            cap_buf[cap_len] = '\0';
+        }
+        return;
+    }
     Serial1.print(s);
     Serial1.print("\r\n");
 }
@@ -528,6 +554,50 @@ static void set_flood_max(int argc, char** argv) {
     out("OK");
 }
 
+// ─── Mesh-admin configuration ────────────────────────────────────────────────
+static void set_admin_password(int argc, char** argv) {
+    if (argc < 3) { out("Err: usage: set admin.password <password>  (empty disables mesh admin)"); return; }
+    const char* pw = argv[2];
+    if ((int)strlen(pw) >= (int)sizeof(adm.admin_password)) { out("Err: too long (max 23)"); return; }
+    strncpy(adm.admin_password, pw, sizeof(adm.admin_password));
+    adm.admin_password[sizeof(adm.admin_password) - 1] = '\0';
+    prefs_save();
+    out(strlen(pw) ? "OK (admin enabled)" : "OK (admin disabled)");
+}
+static void set_guest_password(int argc, char** argv) {
+    if (argc < 3) { out("Err: usage: set guest.password <password>  (empty disables guest)"); return; }
+    const char* pw = argv[2];
+    if ((int)strlen(pw) >= (int)sizeof(adm.guest_password)) { out("Err: too long (max 23)"); return; }
+    strncpy(adm.guest_password, pw, sizeof(adm.guest_password));
+    adm.guest_password[sizeof(adm.guest_password) - 1] = '\0';
+    prefs_save();
+    out(strlen(pw) ? "OK (guest enabled)" : "OK (guest disabled)");
+}
+static void set_admin_timeout(int argc, char** argv) {
+    if (argc < 3) { out("Err: usage: set admin.timeout <seconds>  (0 = never expire)"); return; }
+    long v;
+    if (parse_int(argv[2], &v) || v < 0 || v > 65535) { out("Err: bad value"); return; }
+    adm.admin_timeout = (uint16_t)v;
+    prefs_save();
+    out("OK");
+}
+static void get_admin_password(void) { getv(strlen(adm.admin_password) ? adm.admin_password : "(empty)"); }
+static void get_guest_password(void) { getv(strlen(adm.guest_password) ? adm.guest_password : "(empty)"); }
+static void get_admin_timeout(void)  { char b[16]; snprintf(b, sizeof(b), "%u", (unsigned)adm.admin_timeout); getv(b); }
+
+// List active mesh-admin sessions (USB).
+static void cmd_acl(void) {
+    if (acl_count() == 0) { out("no active sessions"); return; }
+    for (int i = 0; i < ACL_MAX; i++) {
+        const AclEntry* e = acl_at(i);
+        if (e && e->active) {
+            const char* p = (e->perms == PERM_ADMIN) ? "admin" : (e->perms == PERM_READWRITE || e->perms == PERM_READ) ? "read" : "guest";
+            char b[24]; snprintf(b, sizeof(b), "%02X %s", (unsigned)e->pub[0], p);
+            raw_line(b);
+        }
+    }
+    raw_line("   EOF");
+}
 
 static void handle_line(char* raw) {
     // Trim leading/trailing whitespace
@@ -590,6 +660,7 @@ static void handle_line(char* raw) {
         if (argc >= 2 && !strcmp(argv[1], "neighbors")) { cli_send_advert_now(true); out("OK"); }
         done = true;
     }
+    else if (!strcmp(c, "acl")) { cmd_acl(); done = true; }
     else if (!strcmp(c, "stats-core"))                      { FINISH(cmd_stats_core()); }
     else if (!strcmp(c, "stats-packets"))                   { FINISH(cmd_stats_packets()); }
     else if (!strcmp(c, "time"))                            { cmd_time(argc, argv); done = true; }
@@ -617,7 +688,10 @@ static void handle_line(char* raw) {
         else if (!strcmp(g, "dutycycle"))   get_dutycycle();
         else if (!strcmp(g, "af"))          get_af();
         else if (!strcmp(g, "flood.max"))   get_flood_max();
-        else out("Err: unknown (name|lat|lon|radio|freq|tx|public.key|role|repeat|loop.detect|txdelay|direct.txdelay|dutycycle|flood.max|flood.advert.interval|advert.interval)");
+        else if (!strcmp(g, "admin.password")) get_admin_password();
+        else if (!strcmp(g, "guest.password")) get_guest_password();
+        else if (!strcmp(g, "admin.timeout"))  get_admin_timeout();
+        else { char ub[44]; snprintf(ub, sizeof(ub), "Err: unknown get '%s'", g); console_log(ub); out(ub); }
         done = true;
     }
 
@@ -641,13 +715,31 @@ static void handle_line(char* raw) {
         else if (!strcmp(s, "dutycycle"))           set_dutycycle(argc, argv);
         else if (!strcmp(s, "af"))                  set_af(argc, argv);
         else if (!strcmp(s, "flood.max"))           set_flood_max(argc, argv);
-        else out("Err: unknown (name|lat|lon|radio|freq|tx|repeat|loop.detect|txdelay|direct.txdelay|dutycycle|flood.max|flood.advert.interval|advert.interval)");
+        else if (!strcmp(s, "admin.password"))      set_admin_password(argc, argv);
+        else if (!strcmp(s, "guest.password"))      set_guest_password(argc, argv);
+        else if (!strcmp(s, "admin.timeout"))       set_admin_timeout(argc, argv);
+        else { char ub[44]; snprintf(ub, sizeof(ub), "Err: unknown set '%s'", s); console_log(ub); out(ub); }
         done = true;
     }
 
     if (!done) {
-        out("Err: unknown command (ver|board|role|reboot|erase|clock|time|advert|advert.zerohop|neighbors|discover.neighbors|stats-core|stats-packets|log|get|set)");
+        char ub[48]; snprintf(ub, sizeof(ub), "Err: unknown command '%s'", c); console_log(ub); out(ub);
         done = true;
     }
     #undef FINISH
+}
+
+// Run a CLI command, capturing its reply into outbuf (for mesh-admin). Returns
+// the reply length. handle_line() is reused; its output helpers divert to the
+// capture buffer while cap_buf is set.
+int cli_execute(const char* cmd, char* outbuf, int outsize) {
+    static char line[72];   // static: keep the 1 KB stack small
+    int n = (int)strlen(cmd);
+    if (n >= (int)sizeof(line)) n = (int)sizeof(line) - 1;
+    memcpy(line, cmd, n); line[n] = '\0';
+    outbuf[0] = '\0';
+    cap_buf = outbuf; cap_len = 0; cap_size = outsize;
+    handle_line(line);
+    cap_buf = 0;
+    return cap_len;
 }

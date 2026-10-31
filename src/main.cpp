@@ -21,12 +21,24 @@
 #include <SPI.h>
 #include <RadioLib.h>
 #include <SHA256.h>
+#include <SHA512.h>
 #include <Ed25519.h>
 #include <IWatchdog.h>
 #include "config.h"
+#include "meshcrypto/meshcrypto.h"
+#include "meshcrypto/ed_25519.h"
+#include "acl.h"
 
 // ─── Version ─────────────────────────────────────────────────────────────────
-#define FW_VERSION "1.14.0"
+#define FW_VERSION "1.15.0"
+
+// ─── Mesh-admin payload types (matching MeshCore) ────────────────────────────
+#define PAYLOAD_TYPE_RESPONSE   0x01
+#define PAYLOAD_TYPE_TXT_MSG    0x02
+#define PAYLOAD_TYPE_ANON_REQ   0x07
+#define TXT_TYPE_CLI_DATA       1
+#define TXT_TYPE_CLI_COMMAND    3
+#define RESP_SERVER_LOGIN_OK    0
 
 // ─── Pin definitions ─────────────────────────────────────────────────────────
 #define PIN_NSS   PA4
@@ -71,6 +83,7 @@
 // with the desired byte. Use tools/gen_identity.py to search for one.
 static uint8_t own_privkey[32];
 uint8_t own_pubkey[32];
+static uint8_t own_x25519_key[32];  // mesh-admin scalar = SHA512(own_privkey)[0:32] clamped
 static uint8_t own_hash;     // 1-byte path hash = own_pubkey[0]
 
 // ── Compile-time hex → bytes helper (constexpr-friendly for a macro) ─────────
@@ -110,6 +123,20 @@ static void identity_init(void) {
     sha.finalize(own_privkey, 32);
     Ed25519::derivePublicKey(own_pubkey, own_privkey);
 #endif
+    // Derive the X25519 scalar for mesh-admin key exchange. It MUST equal the
+    // Ed25519 scalar 'a' used to derive own_pubkey (SHA512(seed)[0:32] clamped),
+    // so a companion computing key_exchange(their_a, our_pub) agrees with ours.
+    {
+        SHA512 sha512;
+        sha512.reset();
+        sha512.update(own_privkey, 32);
+        uint8_t h[64];
+        sha512.finalize(h, 64);
+        h[0]  &= 0xF8;
+        h[31] &= 0x7F;
+        h[31] |= 0x40;
+        memcpy(own_x25519_key, h, 32);
+    }
     own_hash = own_pubkey[0];
 }
 
@@ -385,6 +412,188 @@ static void slog(const char* fmt, ...);   // fmt-logger → console ring
 static uint8_t relay_buf[MAX_PKT];
 static int     relay_len = 0;
 
+// ─── Mesh-admin: build + send a flood reply (encrypted) ──────────────────────
+// Packet = [hdr][path_hdr][dest_hash][src_hash][MAC(2)+AES(data)]. Flooding is
+// fine for confidentiality: only this node and the client derive `secret`.
+static void send_admin_reply(uint8_t ptype, const uint8_t* client_hash, const uint8_t* secret,
+                             const uint8_t* data, int data_len) {
+    if (!radio_ok) return;
+    if (data_len > 150) data_len = 150;
+    static uint8_t b[MAX_PKT];   // static: 1 KB stack is too small for this + handlers
+    int n = 0;
+    b[n++] = (uint8_t)(ROUTE_FLOOD | (ptype << 2));
+    b[n++] = 0x00;                  // path_hdr: hop_count=0, hash_size_code=0
+    b[n++] = *client_hash;          // dest_hash (the client)
+    b[n++] = own_hash;              // src_hash (us)
+    mesh_encrypt_then_mac(secret, b + n, data, data_len);   // writes MAC+cipher
+    n += 2 + ((data_len + 15) / 16) * 16;
+    // Mark our own TX as seen (fingerprint = ptype||payload, matching the
+    // official's calculatePacketHash + markSeen). A rebroadcast copy of this
+    // reply that loops back through another repeater carries the same payload
+    // → same fingerprint, so it's deduped here instead of re-relayed, which is
+    // what was producing duplicate replies.
+    dedup_seen(b + 2, ptype, (uint8_t)(n - 2));
+    no_delay = true;                // small delay, not the 300-800ms relay backoff
+    send_pkt(b, n);
+}
+
+// Login (ANON_REQ): payload = [dest_hash][sender_pub(32)][MAC+AES(ts(4)+password)]
+static bool handle_anon_req(const uint8_t* pl, int plen) {
+    if (plen < 1 + 32 + 2 + 1) return false;
+    const uint8_t* sender_pub = pl + 1;
+    const uint8_t* macData    = pl + 1 + 32;
+    int enc_len = plen - 1 - 32;
+
+    uint8_t secret[32];
+    ed25519_key_exchange(secret, sender_pub, own_x25519_key);
+
+    static uint8_t data[160];   // static: keep the 1 KB stack small
+    int len = mesh_mac_then_decrypt(secret, data, macData, enc_len);
+    if (len < 5) return false;
+    uint32_t their_ts; memcpy(&their_ts, data, 4);
+    const char* password = (const char*)(data + 4);
+
+    uint8_t perms = 0xFF;
+    if (password[0] == 0) {
+        AclEntry* e = acl_by_pub(sender_pub);
+        if (!e) return false;              // blank pw only for an existing session
+        perms = e->perms;
+    } else if (adm.admin_password[0] && strcmp(password, (const char*)adm.admin_password) == 0) {
+        perms = PERM_ADMIN;
+    } else if (adm.guest_password[0] && strcmp(password, (const char*)adm.guest_password) == 0) {
+        perms = PERM_READ;                  // guest = read-only (no set, no reboot/erase)
+    } else {
+        return false;                      // bad password
+    }
+
+    AclEntry* e = acl_add(sender_pub, perms, secret);
+    if (!e) return false;                  // ACL full
+    if (their_ts <= e->last_ts) return false;   // login replay guard
+    e->perms = perms;
+    e->last_ts = their_ts;
+    e->last_activity_ms = millis();
+
+    // login RESPONSE: [ts(4)][RESP_SERVER_LOGIN_OK=0][0][is_admin][perms][rand(4)][ver_level]
+    static uint8_t resp[13];
+    uint32_t now = ts_base + millis() / 1000;
+    memcpy(resp, &now, 4);
+    resp[4]  = RESP_SERVER_LOGIN_OK;
+    resp[5]  = 0;
+    resp[6]  = (perms == PERM_ADMIN) ? 1 : 0;
+    resp[7]  = perms;
+    resp[8]  = (uint8_t)(millis() & 0xFF);
+    resp[9]  = (uint8_t)((millis() >> 8) & 0xFF);
+    resp[10] = e->pub[0];
+    resp[11] = e->pub[1];
+    resp[12] = 0;                          // FIRMWARE_VER_LEVEL (informational)
+    send_admin_reply(PAYLOAD_TYPE_RESPONSE, sender_pub, secret, resp, sizeof(resp));
+
+    slog("login %02X %s", e->pub[0], perms == PERM_ADMIN ? "admin" : "guest");
+    return true;
+}
+
+// Minimum permission a CLI command requires (ACL gate). Fail-safe: unknown → ADMIN.
+static uint8_t cmd_perm_needed(const char* text) {
+    while (*text == ' ' || *text == '\t') text++;
+    if (!strncmp(text, "get", 3))       return PERM_READ;
+    if (!strncmp(text, "ver", 3))       return PERM_READ;
+    if (!strncmp(text, "board", 5))     return PERM_READ;
+    if (!strncmp(text, "role", 4))      return PERM_READ;
+    if (!strncmp(text, "clock", 5))     return PERM_READ;
+    if (!strncmp(text, "time", 4))      return PERM_READ;
+    if (!strncmp(text, "stats", 5))     return PERM_READ;
+    if (!strncmp(text, "neighbors", 9)) return PERM_READ;
+    if (!strncmp(text, "log", 3))       return PERM_READ;
+    if (!strncmp(text, "acl", 3))       return PERM_READ;
+    if (!strncmp(text, "set", 3))       return PERM_READWRITE;
+    // reboot / erase / dfu and anything unrecognized require full admin
+    return PERM_ADMIN;
+}
+
+// TXT_MSG: payload = [dest_hash][src_hash][MAC+AES(ts(4)+flags(1)+text)]
+static bool handle_txt_msg(const uint8_t* pl, int plen) {
+    if (plen < 2 + 2 + 5) { slog("TXM: short plen=%d", plen); return false; }
+    uint8_t src_hash = pl[1];
+    AclEntry* e = acl_by_hash(src_hash);
+    if (!e) { slog("TXM: no session src=%02X (acl=%d)", src_hash, acl_count()); return false; }   // unknown session
+
+    static uint8_t data[160];   // static: keep the 1 KB stack small
+    memset(data, 0, sizeof(data));
+    // The sender sizes the datagram to exactly 5+text_len and omits the null
+    // terminator; when 5+text_len is a 16-multiple there is no zero padding, so
+    // the plaintext is NOT null-terminated. Pre-clearing the buffer guarantees
+    // the byte right after the text is a real 0, so strnlen/strchr stop there
+    // instead of reading stale bytes from a previous message.
+    int len = mesh_mac_then_decrypt(e->secret, data, pl + 2, plen - 2);
+    if (len < 5) { slog("TXM: MAC fail src=%02X", src_hash); return false; }
+    uint32_t their_ts; memcpy(&their_ts, data, 4);
+    uint8_t flags = data[4] >> 2;
+    const char* text = (const char*)(data + 5);
+
+    // Diagnostic: hex dump of the FULL decrypted command text. Exposes
+    // multi-var / multi-get batches and any non-printable byte separators
+    // (20 bytes/line, offset-prefixed; capped at 64 bytes = plenty).
+    {
+        int tl = (int)strnlen(text, 150);
+        if (tl > 64) tl = 64;
+        slog("TXM dec=%d txtlen=%d hex:", len, tl);
+        for (int off = 0; off < tl; off += 20) {
+            static char hb[48];
+            int n = snprintf(hb, sizeof(hb), "%02d:", off);
+            int cnt = (tl - off > 20) ? 20 : (tl - off);
+            for (int i = 0; i < cnt && n < 46; i++)
+                n += snprintf(hb + n, sizeof(hb) - n, "%02X", (unsigned)data[5 + off + i]);
+            console_log(hb);
+        }
+    }
+
+    // The app prefixes commands with a short transaction ID ("<sess>|") so it
+    // can match each reply to the request that produced it. Strip it, run the
+    // command, and echo it back in the reply ("<sess>|<reply>"). No '|', or a
+    // run of >8 chars before it, is treated as a plain (unprefixed) command.
+    static char sess[16];
+    int sess_len = 0;
+    const char* cmd = text;
+    {
+        const char* p = strchr(text, '|');
+        if (p && (int)(p - text) >= 1 && (int)(p - text) <= 8) {
+            sess_len = (int)(p - text);
+            memcpy(sess, text, sess_len);
+            sess[sess_len] = '\0';
+            cmd = p + 1;
+        }
+    }
+    slog("TXM: ok src=%02X fl=%d sess='%s' cmd='%s'", src_hash, flags, sess_len ? sess : "-", cmd);
+
+    // The app sends commands as TXT_TYPE_CLI_DATA (1) or TXT_TYPE_CLI_COMMAND (3);
+    // both mean "run this". Genuine command *replies* are addressed to the client,
+    // never to us, so accepting both can't mis-fire here.
+    if (flags != TXT_TYPE_CLI_COMMAND && flags != TXT_TYPE_CLI_DATA) {
+        slog("TXM: not cmd fl=%d", flags); return false;
+    }
+    if (e->perms < cmd_perm_needed(cmd)) { slog("TXM: perms deny (p=%d)", e->perms); return false; }
+
+    static char reply[150];
+    int rlen = cli_execute(cmd, reply, sizeof(reply));
+    int prefix_len = sess_len ? (sess_len + 1) : 0;   // "<sess>|"
+    if (rlen > 148 - prefix_len) rlen = 148 - prefix_len;   // keep under the 150-byte cap
+
+    // reply as TXT_MSG CLI_DATA: [ts(4)][flags=CLI_DATA<<2][<sess>|]<reply>
+    static uint8_t out[165];
+    uint32_t now = ts_base + millis() / 1000;
+    memcpy(out, &now, 4);
+    out[4] = (uint8_t)(TXT_TYPE_CLI_DATA << 2);
+    int o = 5;
+    if (prefix_len) { memcpy(out + o, sess, sess_len); out[o + sess_len] = '|'; o += prefix_len; }
+    memcpy(out + o, reply, rlen);
+    slog("TXM: reply %d bytes (prefix=%d)", rlen, prefix_len);
+    send_admin_reply(PAYLOAD_TYPE_TXT_MSG, &e->pub[0], e->secret, out, o + rlen);
+
+    e->last_activity_ms = millis();
+    if (their_ts > e->last_ts) e->last_ts = their_ts;
+    return true;
+}
+
 static bool process_pkt(const uint8_t* data, int len) {
     if (len < 3) { slog("Drop: malformed"); return false; }
 
@@ -413,6 +622,31 @@ static bool process_pkt(const uint8_t* data, int len) {
         memcpy(&adv_ts, payload_ptr + 32, 4);
         int8_t snr_x4 = (int8_t)(radio.getSNR() * 4.0f);
         neighbor_add(payload_ptr, adv_ts, snr_x4);
+    }
+
+    // ── Mesh-admin packets addressed to us (dest_hash == own_hash) ──────────
+    // Handled (or dropped) here; never relayed. Packets not addressed to us fall
+    // through and are relayed normally (propagating a login to other repeaters).
+    if (ptype == PAYLOAD_TYPE_ANON_REQ || ptype == PAYLOAD_TYPE_TXT_MSG || ptype == PAYLOAD_TYPE_RESPONSE) {
+        // DIAGNOSTIC: log admin packets + whether they're addressed to us
+        if (ptype == PAYLOAD_TYPE_ANON_REQ)
+            slog("ANON dst=%02X src? own=%02X hc=%d %s", payload_ptr[0], own_hash, hop_count, payload_ptr[0]==own_hash?"US":"relay");
+        else if (ptype == PAYLOAD_TYPE_TXT_MSG && payload_len >= 2)
+            slog("TXM  dst=%02X src=%02X own=%02X hc=%d %s", payload_ptr[0], payload_ptr[1], own_hash, hop_count, payload_ptr[0]==own_hash?"US":"relay");
+        if (payload_len >= 2 && payload_ptr[0] == own_hash) {
+            // Record + dedup the addressed-to-us packet. This block returns
+            // before the flood-relay dedup below, so without this a re-relayed
+            // copy of a command (same payload -> same fingerprint) that loops
+            // back through another repeater would be reprocessed, re-sending the
+            // reply — the duplicate the companion was seeing.
+            if (dedup_seen(payload_ptr, ptype, (uint8_t)payload_len)) {
+                slog("Drop: dedup admin");
+                return false;
+            }
+            if (ptype == PAYLOAD_TYPE_ANON_REQ) handle_anon_req(payload_ptr, payload_len);
+            else if (ptype == PAYLOAD_TYPE_TXT_MSG) handle_txt_msg(payload_ptr, payload_len);
+            return false;
+        }
     }
 
     // ── DIRECT routing ────────────────────────────────────────────────────────
@@ -517,7 +751,11 @@ static bool process_pkt(const uint8_t* data, int len) {
 void setup(void) {
     // LED
     pinMode(PIN_LED,  OUTPUT);
-    digitalWrite(PIN_LED, LED_ON);   // ON during init
+    // Boot signature: 5 quick flashes so a successful *app* boot is easy to tell
+    // apart from the ROM bootloader (which shows a SOLID LED). Fires before radio
+    // init, so you get it even if the radio later comes up in degraded mode.
+    led_blink(5, 70);
+    digitalWrite(PIN_LED, LED_OFF);
 
     // RF switch pins
     pinMode(PIN_TXEN, OUTPUT); digitalWrite(PIN_TXEN, LOW);
@@ -662,6 +900,22 @@ void loop(void) {
              (unsigned long)(now / 1000), (unsigned long)cli_now_epoch(),
              (unsigned long)stat_rx, (unsigned long)stat_relay, (unsigned long)stat_drop);
         led_blink(1, 80);   // heartbeat blink every 10 s
+    }
+
+    // ── Expire idle mesh-admin sessions (admin.timeout seconds) ──────────────
+    {
+        static uint32_t last_acl_ms = 0;
+        if (adm.admin_timeout > 0 && now - last_acl_ms >= 1000UL) {
+            last_acl_ms = now;
+            uint32_t lim = (uint32_t)adm.admin_timeout * 1000UL;
+            for (int i = 0; i < ACL_MAX; i++) {
+                AclEntry* e = (AclEntry*)acl_at(i);
+                if (e && e->active && (now - e->last_activity_ms) > lim) {
+                    e->active = 0;
+                    slog("session %02X expired", e->pub[0]);
+                }
+            }
+        }
     }
 
     // ── CLI-triggered advert ─────────────────────────────────────────────────

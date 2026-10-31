@@ -106,7 +106,7 @@ pio run -e specter
 │                                                     │
 │  [USB-C]  ┌──────────────────────────────────────┐ │
 │           │                                      │ │
-│           │   [BOOT0 btn]          [RESET btn]   │ │
+│           │   [ KEY  btn]          [RESET btn]   │ │
 │           │       ●                    ●         │ │
 │           └──────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────┘
@@ -172,7 +172,18 @@ Starting execution at address 0x08000000... done.
 
 ### Step 4, Confirm
 
-Open serial monitor immediately after flash:
+**LED boot signature** — the app flashes the LED **5 quick blinks** the instant
+it starts, before radio init. So you can tell the two states apart at a glance:
+
+| State | LED |
+|---|---|
+| ROM bootloader (BOOT0 held at reset) | **solid ON** |
+| App firmware booted | **5 quick blinks**, then off (1 blink / 10 s heartbeat) |
+
+This is the fast way to confirm a flash took (or that a reset landed in the app
+vs. the bootloader) without opening a serial terminal. (Added in v1.15.0.)
+
+To see the serial boot message, open a monitor immediately after flash:
 
 ```bash
 python3 -m serial.tools.miniterm /dev/ttyUSB0 115200

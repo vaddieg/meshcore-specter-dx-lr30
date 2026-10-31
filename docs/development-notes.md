@@ -181,6 +181,71 @@ Using `SHA256(domain + UID)` ensures:
 
 ---
 
+## Mesh Administration Protocol
+
+SPECTER speaks the official MeshCore **peer-data** protocol so an official
+companion radio can log in and run CLI commands over the LoRa mesh. This is the
+reference for byte-exactness — the companion firmware is the ground truth.
+
+### Crypto (verified byte-exact, `src/meshcrypto/`)
+
+- **Shared secret** = `X25519(their_key, our_pub)`, ported verbatim from
+  `MeshCore/lib/ed25519/key_exchange.c` + `fe.c`. It X25519-clamps the *scalar*
+  and unpacks the *Ed25519 public key* (Edwards Y → Montgomery X via
+  `(Y+1)/(1-Y)`).
+- **CRITICAL — the scalar is `SHA512(seed)[0:32]` clamped, NOT the raw seed.**
+  The official `create_keypair()` does `private_key = SHA512(seed)`, clamps it,
+  and *that* is what `calcSharedSecret()` passes to `key_exchange()`. SPECTER's
+  `own_privkey` is a raw seed (used by the Crypto lib for the ADVERT signature),
+  so we derive a separate `own_x25519_key = SHA512(own_privkey)[0:32]` clamped
+  and pass *that* to the exchange. Passing the raw seed would never agree with a
+  real companion. (The Crypto lib's `deriveKeys` is byte-identical to this:
+  `buf[0]&=0xF8; buf[31]&=0x7F; buf[31]|=0x40`.)
+- **Cipher** = AES-128-ECB, no IV, final block zero-padded. AES key = first 16
+  bytes of the 32-byte secret.
+- **MAC** = first 2 bytes of `HMAC-SHA256(key=secret, msg=ciphertext)`,
+  **prepended** to the ciphertext. Decrypt verifies the MAC first (reject on
+  mismatch) — so a tampered packet is dropped, not decrypted.
+
+### Wire layout
+
+| Packet | payload (after path) |
+|---|---|
+| **ANON_REQ** (0x07) | `dest_hash(1) sender_pub(32) [MAC(2)+AES( ts(4) \| password )]` |
+| **TXT_MSG** (0x02) | `dest_hash(1) src_hash(1) [MAC(2)+AES( ts(4) flags(1) text )]` where `flags = byte>>2`; `3`=CLI_COMMAND, `1`=CLI_DATA |
+| **RESPONSE** (0x01) | `dest_hash(1) src_hash(1) [MAC(2)+AES( ts(4) 0x00 0x00 is_admin(1) perms(1) rand(4) ver_level(1) )]` |
+
+- `dest_hash`/`src_hash` are 1-byte path hashes = `pubkey[0]`.
+- A companion sends **ANON_REQ as a flood** (it doesn't know our path yet);
+  SPECTER replies with a **flood RESPONSE** (the client learns our hash). All
+  admin packets are *flooded* — confidentiality comes from the per-session
+  encryption, not routing.
+
+### Sessions (`src/acl.cpp`)
+
+- In-memory, 4 slots, keyed by the client's **ephemeral** pubkey (each login =
+  a fresh ephemeral key = a fresh session). Not persisted; a reboot ends all.
+- Stores: pubkey, per-session shared secret, permission, `last_ts` (replay
+  guard — a re-login must carry a greater timestamp), `last_activity_ms` (idle
+  timeout, expired in `loop()` after `admin.timeout` seconds).
+- Match on TXT_MSG is by `src_hash` (1 byte) → `acl_by_hash()`.
+
+### Permission gate (`cmd_perm_needed()`)
+
+- READ: `get` `ver` `board` `role` `clock` `time` `stats-*` `neighbors` `log` `acl`
+- READWRITE: `set`
+- ADMIN (and anything unlisted, fail-safe): `reboot` `erase` `dfu`, …
+- Admin password → ADMIN, guest password → READ.
+
+### Test
+
+`/tmp/login_test.cpp` (host) builds each packet exactly per the layout above
+and runs the server-side parse. It also checks the client/server X25519 secrets
+agree, the MAC rejects tampering, and a wrong scalar is rejected. Build it with
+the Crypto lib sources + `src/meshcrypto/*` (see the recipe in the commit).
+
+---
+
 ## Radio Configuration Mismatch Symptoms
 
 ### The Problem

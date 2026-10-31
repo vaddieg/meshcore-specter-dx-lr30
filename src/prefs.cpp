@@ -24,6 +24,17 @@
 #define PREFS_MAGIC   0x53505452UL   // "Sptr"
 #define PREFS_VER     1UL
 
+// AdminConfig record (separate, in the same page) — words [20..35]:
+//  [20] magic   [21] version
+//  [22..27] admin_password (24 B)
+//  [28..33] guest_password (24 B)
+//  [34] admin_timeout (low 16 b) + pad
+//  [35] CRC16-CCITT over words [20..34]
+#define ADMIN_MAGIC   0x41444D4EUL   // "AdmN"
+#define ADMIN_VER     1UL
+#define ADMIN_OFF     20             // word offset of the admin record
+#define ADMIN_CRCN    15             // words covered by the admin CRC ([20..34])
+
 // 18 words:
 //  [0] magic   [1] version
 //  [2..16] NodeConfig payload (60 B, zero-padded to 64)
@@ -41,6 +52,12 @@ static uint16_t crc16_ccitt(const uint8_t* data, uint32_t len) {
 
 // ─── Runtime config instance (defined here, shared via config.h) ────────────
 NodeConfig cfg;
+AdminConfig adm;
+
+static void admin_defaults(void) {
+    memset(&adm, 0, sizeof(adm));   // empty passwords = mesh admin disabled
+    adm.admin_timeout = DEF_ADMIN_TIMEOUT;
+}
 
 static void config_defaults(void) {
     memset(&cfg, 0, sizeof(cfg));
@@ -71,14 +88,6 @@ static void config_defaults(void) {
     cfg.flood_max       = DEF_FLOOD_MAX;
 }
 
-static bool flash_read_words(const uint32_t* src, uint32_t* dst, int n) {
-    for (int i = 0; i < n; i++) {
-        if (src[i] == 0xFFFFFFFFUL) return false;   // erased page
-        dst[i] = src[i];
-    }
-    return true;
-}
-
 static bool flash_write_words(uint32_t addr, const uint32_t* data, int n) {
     uint32_t err;
     __disable_irq();
@@ -102,12 +111,20 @@ static bool flash_write_words(uint32_t addr, const uint32_t* data, int n) {
 }
 
 void prefs_save(void) {
-    uint32_t w[PREFS_WORDS] = {0};
+    uint32_t w[ADMIN_OFF + ADMIN_CRCN + 1] = {0};   // words [0..35]
+    // NodeConfig record ([0..17])
     w[0] = PREFS_MAGIC;
     w[1] = PREFS_VER;
     memcpy(w + 2, &cfg, sizeof(NodeConfig));   // 60 B → words 2..16
     w[17] = crc16_ccitt((const uint8_t*)w, 17 * 4);
-    flash_write_words(PREFS_ADDR, w, PREFS_WORDS);
+    // AdminConfig record ([20..35])
+    w[ADMIN_OFF]     = ADMIN_MAGIC;
+    w[ADMIN_OFF + 1] = ADMIN_VER;
+    memcpy(w + ADMIN_OFF + 2, adm.admin_password, 24);
+    memcpy(w + ADMIN_OFF + 8, adm.guest_password, 24);
+    w[ADMIN_OFF + 14] = adm.admin_timeout;      // low 16 b; high = pad
+    w[ADMIN_OFF + 15] = crc16_ccitt((const uint8_t*)(w + ADMIN_OFF), ADMIN_CRCN * 4);
+    flash_write_words(PREFS_ADDR, w, ADMIN_OFF + ADMIN_CRCN + 1);
 }
 
 void prefs_erase(void) {
@@ -127,13 +144,25 @@ void prefs_erase(void) {
 
 void prefs_load(void) {
     config_defaults();
+    admin_defaults();
     const uint32_t* src = (const uint32_t*)PREFS_ADDR;
-    uint32_t w[PREFS_WORDS];
-    if (!flash_read_words(src, w, PREFS_WORDS)) return;     // empty/erased → defaults
-    if (w[0] != PREFS_MAGIC || w[1] != PREFS_VER) return;
-    if (w[17] != crc16_ccitt((const uint8_t*)w, 17 * 4)) return;
-    NodeConfig stored;
-    memcpy(&stored, w + 2, sizeof(NodeConfig));
-    stored.name[sizeof(stored.name) - 1] = '\0';
-    cfg = stored;
+    uint32_t w[ADMIN_OFF + ADMIN_CRCN + 1];
+    for (int i = 0; i < (int)sizeof(w)/4; i++) w[i] = src[i];   // erased = 0xFFFFFFFF
+
+    // NodeConfig record ([0..17]) — independent of the admin record
+    if (w[0] == PREFS_MAGIC && w[1] == PREFS_VER &&
+        w[17] == crc16_ccitt((const uint8_t*)w, 17 * 4)) {
+        NodeConfig stored;
+        memcpy(&stored, w + 2, sizeof(NodeConfig));
+        stored.name[sizeof(stored.name) - 1] = '\0';
+        cfg = stored;
+    }
+
+    // AdminConfig record ([20..35]) — absent/old → keep admin_defaults()
+    if (w[ADMIN_OFF] == ADMIN_MAGIC && w[ADMIN_OFF + 1] == ADMIN_VER &&
+        w[ADMIN_OFF + 15] == crc16_ccitt((const uint8_t*)(w + ADMIN_OFF), ADMIN_CRCN * 4)) {
+        memcpy(adm.admin_password, w + ADMIN_OFF + 2, 24); adm.admin_password[23] = '\0';
+        memcpy(adm.guest_password, w + ADMIN_OFF + 8, 24); adm.guest_password[23] = '\0';
+        adm.admin_timeout = (uint16_t)(w[ADMIN_OFF + 14] & 0xFFFFUL);
+    }
 }

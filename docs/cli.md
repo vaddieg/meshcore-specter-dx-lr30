@@ -8,9 +8,11 @@ Hardware constraints that shape the subset:
 - **No user buttons** — USB serial (CH340, 115200 baud) is the *only*
   admin channel
 - No GPS, no sensors, no bridge, no Ethernet, no battery, no FEM
-- No remote (LoRa) admin channel → "Serial Only" commands are the *only*
-  ones we need to support; commands marked "Serial Only: No" in the
-  reference doc must additionally work over LoRa and are lower priority
+- **Mesh admin over LoRa** — the device can be administered remotely by an
+  official MeshCore companion radio (ANON_REQ login + CLI, X25519/AES-ECB
+  encrypted), matching the companion firmware's protocol. USB remains the
+  primary channel; mesh admin adds field access. See *"Mesh
+  administration"* below.
 
 ## 1. Required command list (prioritized)
 
@@ -60,8 +62,9 @@ Hardware constraints that shape the subset:
 
 - `gps *` (no GPS module), `sensor *`, `bridge *`, `eth.*` (no modules)
 - `pwrmgt.*` (mains/USB powered, no power management)
-- `password`, `guest.password`, `setperm`, `get acl`, `allow.read.only`
-  (no remote admin channel; LoRa-admin ACL is meaningless)
+- `setperm`, `allow.read.only` (permission model simplified to admin/guest;
+  `admin.password` / `guest.password` / `admin.timeout` / `acl` **are**
+  implemented for mesh admin — see *"Mesh administration"* below)
 - `region *` (this build has no region/transport-code support)
 - `start ota`, `clkreboot` (no OTA mechanism yet)
 - `radio.rxgain`, `radio.fem.*` (no FEM on DX-LR30)
@@ -239,6 +242,13 @@ OK
 | `get direct.txdelay` / `set <0-2>` | `0.3` / `OK` | direct traffic delay factor |
 | `get dutycycle` / `set <1-100>` | `10` / `OK` | EU default 10 % |
 | `get flood.max` / `set <0-64>` | `64` / `OK` | max flood hops |
+| `set admin.password <pw>` | `OK` | **enables mesh admin** (empty = disabled); see §3.6 |
+| `get admin.password` | password / `(empty)` | |
+| `set guest.password <pw>` | `OK` | enables read-only guest mesh access (empty = disabled) |
+| `get guest.password` | password / `(empty)` | |
+| `set admin.timeout <s>` | `OK` | idle-session lifetime, seconds (0 = never); default 600 |
+| `get admin.timeout` | `600` | |
+| `acl` | session lines / `no active sessions` | list active mesh-admin sessions |
 | `reboot` | *(no reply)* | per MeshCore spec |
 | `erase` | `OK` + reboot | **factory reset** — wipes stored settings |
 | `dfu` *(if compiled in)* | `OK - entering bootloader in 1s` | see §3.5 |
@@ -293,6 +303,50 @@ stm32flash -w .pio/build/specter/firmware.bin -v -R -b 57600 /dev/cu.usbserial-1
 
 Without the pins defined, use the physical BOOT0+RESET button sequence
 (see [flashing.md](flashing.md)).
+
+### 3.6 Mesh administration (remote over LoRa)
+
+SPECTER can be administered **remotely** by an official MeshCore **companion
+radio** (or any client speaking the MeshCore peer-data protocol) over the LoRa
+mesh — the same channel a companion uses to talk to a sensor. USB remains the
+primary channel; this is for field access where USB isn't practical.
+
+**Setup (over USB):**
+```bash
+set admin.password <password>     # enables admin (full) mesh access
+set guest.password <password>     # optional: read-only guest access
+set admin.timeout 600             # idle session lifetime (s); 0 = never
+```
+An empty `admin.password` disables mesh admin entirely. Passwords are stored
+in a separate, versioned flash record (the node-config record is untouched,
+so an `erase` of the old layout still works).
+
+**How it works** (byte-for-byte the MeshCore protocol):
+- A companion sends an **ANON_REQ** (flood) with an ephemeral Ed25519 key and
+  the password, encrypted with `X25519(their key, our pubkey)`.
+- SPECTER checks the password, derives the shared secret, and opens a
+  **session** (keyed by the ephemeral key), replying with a **RESPONSE**
+  (login OK + permission level).
+- The companion then sends **CLI commands** as TXT_MSG (`TXT_TYPE_CLI_COMMAND`),
+  encrypted with the session secret. SPECTER runs the command and returns the
+  reply as TXT_MSG (`TXT_TYPE_CLI_DATA`).
+- All peer data is AES-128-ECB (zero-padded) with a 2-byte truncated
+  HMAC-SHA256 MAC — so even though replies are *flooded*, only the client and
+  SPECTER can decrypt them.
+
+**Permission model:**
+| Password | Permission | Can do |
+|---|---|---|
+| `admin.password` | ADMIN | everything, incl. `set`, `reboot`, `erase`, `dfu` |
+| `guest.password` | READ | `get`, `ver`, `board`, `clock`, `time`, `stats-*`, `neighbors`, `log`, `acl` |
+
+**Sessions** are in-memory (a reboot ends all of them) and expire after
+`admin.timeout` seconds of inactivity. `acl` lists active sessions
+(`<pub-hash> <role>` lines).
+
+**Test it:** point a second radio running the official MeshCore companion
+firmware at SPECTER, log in with the admin password, and run e.g. `get name`
+/ `set name <n>` / `stats-core`. See [development-notes.md](development-notes.md#mesh-administration-protocol) for the full wire layout.
 
 ## 4. Implementation plan
 

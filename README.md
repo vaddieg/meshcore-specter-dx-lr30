@@ -3,8 +3,8 @@
 > The DX-LR30 is a cheap Chinese LoRa shell device. MeshCore has no official
 > firmware for STM32F103 + SX1262.
 > Specter is a very energy efficient LoRa Meshcore repeater, consuming 0.5-150 mA.
-> It can be configured over USB using https://config.meshcore.io/ 
-> or via TTY using the Meshcore CLI protocol
+> It can be configured over USB using https://config.meshcore.io/ or using the Remote Management
+> The Meshcore CLI protocol over TTY is also supported
 
 ---
 
@@ -52,11 +52,15 @@ flowchart LR
 
 | Component | Part | Notes |
 |-----------|------|-------|
-| MCU | STM32F103C8T6 | 72 MHz Cortex-M3, 64KB Flash, 20KB RAM |
+| MCU | STM32F103C8T6 LQFP48 | 72 MHz Cortex-M3, 128KB Flash, 20KB RAM |
 | Radio | SX1262 | Sub-GHz LoRa, up to +22 dBm |
 | USB-Serial | CH340 (CH340C) | Admin CLI @115200 · ROM bootloader via BOOT0+RESET buttons (DTR/RTS entry not wired) |
 | SWD header | V G D C = 3V3/GND/SWDIO (PA13)/SWCLK (PA14) | Headless flashing with an ST-Link V2 |
 | LED | PB11 | Active HIGH — 1 blink = RX · 2 fast blinks = relay · solid = ADVERT TX |
+
+BOOT0 pin is disconnected. It captures random voltages, therefore it's sometimes possible
+to enter the bootloader mode just by pressing the RST
+
 
 ### Pin Map
 

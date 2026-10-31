@@ -2,7 +2,94 @@
 
 All notable changes to SPECTER firmware are documented here.
 
-## [1.14.0] - Current
+## [1.15.0] - Current
+
+Adds **remote mesh administration**: SPECTER can now be administered over the
+LoRa mesh by an official MeshCore companion radio, byte-for-byte compatible
+with the companion firmware's peer-data protocol. USB remains the primary
+channel; this is field access.
+
+### Added
+- **Mesh admin protocol** (`src/main.cpp` + `src/acl.cpp`): a companion
+  logs in with an **ANON_REQ** (ephemeral Ed25519 key + password, encrypted
+  with `X25519(their key, our pubkey)`), and then runs **CLI commands** as
+  TXT_MSG (`TXT_TYPE_CLI_COMMAND`) / replies as TXT_MSG (`TXT_TYPE_CLI_DATA`),
+  all AES-128-ECB (zero-padded) + 2-byte truncated HMAC-SHA256. Replies are
+  *flooded* but stay confidential — only the client and SPECTER derive the
+  session secret.
+- **`src/meshcrypto/`** — byte-exact port of the official wire crypto:
+  `key_exchange.c` + `fe.c` (X25519, RFC 7748 with Ed25519-seed clamping) and
+  a C++ wrapper (`meshcrypto.cpp`) over the rweather/Crypto AES128/SHA256.
+  Verified on host against a verbatim copy of MeshCore `Utils.cpp` and a full
+  client/server login + CLI round-trip.
+- **Session table** (`acl.cpp`, in-memory, 4 slots): keyed by the client's
+  ephemeral pubkey; holds the per-session shared secret + permission +
+  replay-guard timestamp. A reboot ends all sessions.
+- **CLI**: `set/get admin.password`, `set/get guest.password`,
+  `set/get admin.timeout`, `acl` (list active sessions).
+- **Permission model**: admin password → full (incl. `set`/`reboot`/`erase`/`dfu`);
+  guest password → read-only (`get`, `stats-*`, `neighbors`, `log`, `acl`, …).
+  Idle sessions expire after `admin.timeout` seconds (default 600; 0 = never).
+- **Boot LED signature** — 5 quick flashes the instant the app starts (before
+  radio init), so a successful app boot is easy to distinguish from the ROM
+  bootloader's solid LED (see [flashing.md](docs/flashing.md)).
+- **Mesh-admin diagnostic logging** — `ANON`/`TXM` lines in `log` show how each
+  login/command packet is addressed and where it succeeds/fails (session / MAC /
+  perms).
+
+### Fixed
+- **X25519 scalar (critical interop bug)**: the key exchange must use the
+  Ed25519 scalar `a = SHA512(seed)[0:32]` clamped — **not** the raw seed. The
+  old code passed the raw seed, which would never agree with a real companion.
+  Now `own_x25519_key` is derived correctly (and the SHA-512 `finalize(len)`
+  bug that zeroed it is fixed). Caught by the host round-trip test.
+- **Command flag type**: the app sends CLI commands as `TXT_TYPE_CLI_DATA (1)`,
+  not just `TXT_TYPE_CLI_COMMAND (3)`. The server now accepts **both** as
+  runnable commands (the official `CLI_DATA` type is documented as "a CLI
+  command -or- reply"). Genuine replies are addressed to the client, never to
+  us, so accepting `1` can't mis-fire. Caught by the field diagnostic log.
+- **Transaction-ID prefix**: the app prefixes each command with a short
+  session/transaction ID (`<sess>|<command>`) to correlate replies. SPECTER now
+  strips the prefix, runs the command, and echoes it back in the reply
+  (`<sess>|<reply>`). Without this every app command came back "unknown".
+- **Unknown-command reply names the command**: the mesh reply (and log) now
+  shows the actual unrecognized command (`Err: unknown command '<cmd>'` / `get` /
+  `set`), instead of a generic list, so missing app features are identifiable.
+- **TXT_MSG not null-terminated (critical interop bug)**: the sender sizes the
+  datagram to exactly `5 + text_len` and omits the null terminator, so when
+  `5 + text_len` is a 16-byte multiple there is **no zero padding** and the
+  plaintext isn't null-terminated. `strnlen` then ran into stale buffer bytes,
+  corrupting any such command (`get name` → `get namet` / `get namert.interval`,
+  intermittently, depending on what was in the buffer). The decrypt buffer is
+  now pre-cleared to zero so the text boundary is always a real null.
+- **Full-message diagnostic**: each incoming TXT_MSG is hex-dumped to the log
+  (`TXM … hex:` + `sess='…' cmd='…'`), which is how the bug above was caught.
+  (Stripped before the release.)
+- **Duplicate replies** (two gaps, both fixed):
+  1. *Reply side* — `send_admin_reply` now records its own fingerprint on TX
+     (matching the official's `markSeen`, "in case it is rebroadcast back to us"),
+     so a re-relayed copy of our reply isn't relayed again.
+  2. *Command side (the actual cause)* — the addressed-to-us admin block
+     processed a TXT_MSG and `return false` **without recording its
+     fingerprint** (it returns before the flood-relay dedup). So a re-relayed
+     copy of the *command* that looped back through another repeater was
+     reprocessed, re-sending the reply. The admin block now records + drops
+     duplicates (`Drop: dedup admin`).
+
+### Notes (follow-ups)
+- The periodic **ADVERT** TX has the same not-marked-as-seen gap; it's less
+  visible (adverts are periodic) and left for a follow-up so this release stays
+  focused on the reported duplicate-reply symptom.
+
+### Notes
+- Admin/guest credentials are stored in a **separate, versioned flash record**
+  (words 20–35, magic `AdmN` + CRC16); the node-config record is byte-identical,
+  so there is no migration and an old-layout `erase` still works.
+- Version kept below 1.16.0 so `config.meshcore.io` does **not** expose the
+  `flood.max.unscoped` / `flood.max.advert` variables we don't implement; all
+  features up to `loop.detect` (1.14.0) still work.
+
+## [1.14.0]
 
 Makes SPECTER administrable by the official **config.meshcore.io** web
 client (and the flasher serial console) over USB. Verified live against the

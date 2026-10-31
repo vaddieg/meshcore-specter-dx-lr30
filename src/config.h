@@ -21,6 +21,7 @@
 #define DEF_DIRTX_X10   3                // 0.3 (direct, repeater)
 #define DEF_DUTY_CYCLE  10               // % — EU 868 MHz aggregate limit
 #define DEF_FLOOD_MAX   64
+#define DEF_ADMIN_TIMEOUT 600            // s — idle admin session lifetime (0 = never)
 
 // ─── Runtime node configuration (mutable, persisted in flash) ───────────────
 struct NodeConfig {
@@ -44,6 +45,17 @@ struct NodeConfig {
 
 extern NodeConfig cfg;
 
+// ─── Mesh-admin credentials (persisted in a separate flash record) ──────────
+// Empty admin_password = mesh administration disabled. Empty guest_password =
+// guest (read-only) access disabled. admin_timeout = idle session lifetime in
+// seconds (0 = sessions never expire on their own; they still end on logout).
+struct AdminConfig {
+    char     admin_password[24];   // 23 chars max
+    char     guest_password[24];   // 23 chars max
+    uint16_t admin_timeout;        // seconds
+};
+extern AdminConfig adm;
+
 // ─── prefs.cpp ──────────────────────────────────────────────────────────────
 void prefs_load(void);    // apply build-flag defaults, then overlay flash
 void prefs_save(void);    // persist cfg to flash page
@@ -52,6 +64,7 @@ void prefs_erase(void);   // clear flash page (factory reset)
 // ─── cli.cpp ────────────────────────────────────────────────────────────────
 void cli_begin(void);     // called in setup() after prefs_load()
 void cli_poll(void);      // non-blocking line reader, call in loop()
+int cli_execute(const char* cmd, char* outbuf, int outsize);  // run + capture reply (mesh-admin)
 
 // Neighbor cache (8 most recent adverts), used by `neighbors`
 void neighbor_add(const uint8_t* pubkey32, uint32_t ts, int8_t snr_x4);

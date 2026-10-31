@@ -3,7 +3,7 @@
 ## Board Overview
 
 The **DX-LR30** is a compact LoRa module combining an STM32F103C8T6
-microcontroller with an SX1262 transceiver and a CH340 USB-serial bridge.
+microcontroller with an SX1262 transceiver and a CH340E 10-pin USB-serial bridge.
 It was originally sold as an AT-command LoRa modem. **SPECTER** repurposes it
 as a fully autonomous MeshCore repeater node.
 
@@ -23,8 +23,10 @@ flowchart LR
     MCU -- "SPI1  PA4-7\nTXEN PA0 · RXEN PA1\nBUSY PA2 · NRST PA3" --> SX
     SX --> ANT
 ```
-
 ---
+Physical board inspection revealed STM32F103xx LQFP48 chip with disconnected BOOT0 pin, 
+and the KEY button connected to PB12 which has no effect on entering the bootloader mode.
+
 
 ## Pin Assignments
 
@@ -41,8 +43,7 @@ flowchart LR
 | 10 | PA0 | TXEN | → | RF switch, TX mode |
 | 11 | PA1 | RXEN | → | RF switch, RX mode |
 
-> **Note:** DIO1 (SX1262 interrupt) is **not routed** to the STM32 on the
-> DX-LR30 PCB. RadioLib operates in **polling mode** (`RADIOLIB_NC`).
+
 
 ### USART1, Serial Console (CH340)
 
