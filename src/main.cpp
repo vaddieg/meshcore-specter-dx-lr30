@@ -37,6 +37,7 @@
 #define PAYLOAD_TYPE_RESPONSE   0x01
 #define PAYLOAD_TYPE_TXT_MSG    0x02
 #define PAYLOAD_TYPE_ANON_REQ   0x07
+#define PAYLOAD_TYPE_PATH       0x08   // Returned path (dest/src hashes + MAC)
 // REQ request-type bytes (BaseChatMesh):
 #define  REQ_GET_STATS          0x01   // repeater/server stats (get stats)
 #define  REQ_GET_TELEMETRY      0x03
@@ -232,17 +233,17 @@ static void short_fp(const uint8_t* payload, uint8_t ptype, uint8_t plen, char* 
     snprintf(out, 9, "%02X%02X%02X%02X", full[0], full[1], full[2], full[3]);
 }
 
-// Hex dump a buffer (up to `max` bytes) to the log, 16 bytes/line, to inspect
-// the content of a dropped / unexpected packet.
+// Hex dump a buffer (up to `max` bytes) to the LOCAL USB console only (not the
+// remote log ring), 16 bytes/line, to inspect a dropped / unexpected packet.
 static void hex_dump(const uint8_t* buf, int len, int max) {
     if (len > max) len = max;
     for (int off = 0; off < len; off += 16) {
         static char hb[48];
-        int n = snprintf(hb, sizeof(hb), "%02d:", off);
+        int n = snprintf(hb, sizeof(hb), "  %04X:", off);
         int cnt = (len - off > 16) ? 16 : (len - off);
         for (int i = 0; i < cnt && n < 46; i++)
-            n += snprintf(hb + n, sizeof(hb) - n, "%02X", (unsigned)buf[off + i]);
-        console_log(hb);
+            n += snprintf(hb + n, sizeof(hb) - n, " %02X", (unsigned)buf[off + i]);
+        Serial1.println(hb);
     }
 }
 
@@ -441,7 +442,8 @@ uint32_t get_tx_budget_ms(void) {
     return tx_budget_ms;
 }
 
-static void slog(const char* fmt, ...);   // fwd decl: used by send_pkt's TX log
+static void slog(const char* fmt, ...);   // fwd: important → log ring + USB
+static void dlog(const char* fmt, ...);   // fwd: verbose → USB only
 
 // ─── Send a packet (with RF switch + token-bucket duty-cycle gating) ─────────
 static bool send_pkt(const uint8_t* buf, int len) {
@@ -460,7 +462,7 @@ static bool send_pkt(const uint8_t* buf, int len) {
             const uint8_t* pl = buf + 2 + pb;
             char fp[9];
             short_fp(pl, ptype, (uint8_t)(len - 2 - pb), fp);
-            slog("TX p=%d d=%02X s=%02X hc=%d fp=%s", ptype, pl[0], pl[1], (int)hc, fp);
+            dlog("TX p=%d d=%02X s=%02X hc=%d fp=%s", ptype, pl[0], pl[1], (int)hc, fp);
         }
     }
 
@@ -503,6 +505,8 @@ static bool send_pkt(const uint8_t* buf, int len) {
 // ─── Process received flood packet ───────────────────────────────────────────
 // Returns true if a relay packet should be sent (writes it to relay_buf/relay_len)
 #include <stdarg.h>
+// Important event: goes to the remote log ring (via `log`) AND the local USB
+// console. Keep terse — the ring is exposed over the mesh.
 static void slog(const char* fmt, ...) {
     char buf[72];
     va_list ap;
@@ -510,9 +514,18 @@ static void slog(const char* fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     console_log(buf);
+    Serial1.println(buf);
 }
-
-static void slog(const char* fmt, ...);   // fmt-logger → console ring
+// Verbose diagnostic: local USB console only (NOT the remote log ring). Use for
+// per-packet traces and content dumps.
+static void dlog(const char* fmt, ...) {
+    char buf[80];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    Serial1.println(buf);
+}
 
 static uint8_t relay_buf[MAX_PKT];
 static int     relay_len = 0;
@@ -523,7 +536,11 @@ static int     relay_len = 0;
 static void send_admin_reply(uint8_t ptype, const uint8_t* client_hash, const uint8_t* secret,
                              const uint8_t* data, int data_len) {
     if (!radio_ok) return;
-    if (data_len > 150) data_len = 150;
+    // The official caps MAX_PACKET_PAYLOAD at 184 B (its RX buffer + TX limit),
+    // so a peer drops any packet > 184 B. packet = 6 + round16(data_len) ≤ 184
+    // → data_len ≤ 176 (packet 182 B). Staying under this is required for
+    // one-packet interop with the official companion.
+    if (data_len > 150) data_len = 176;
     static uint8_t b[MAX_PKT];   // static: 1 KB stack is too small for this + handlers
     int n = 0;
     b[n++] = (uint8_t)(ROUTE_FLOOD | (ptype << 2));
@@ -561,8 +578,14 @@ static bool handle_anon_req(const uint8_t* pl, int plen) {
     uint8_t perms = 0xFF;
     if (password[0] == 0) {
         AclEntry* e = acl_by_pub(sender_pub);
-        if (!e) return false;              // blank pw only for an existing session
-        perms = e->perms;
+        if (e) {
+            perms = e->perms;              // blank pw re-authenticates an existing session
+        } else if (adm.guest_password[0] == 0) {
+            perms = PERM_READ;             // guest pw unset → blank pw gets guest (read-only),
+                                           // so the app's guest/Repeater-Status path works out of the box
+        } else {
+            return false;                  // blank pw, no existing session, guest pw set → reject
+        }
     } else if (adm.admin_password[0] && strcmp(password, (const char*)adm.admin_password) == 0) {
         perms = PERM_ADMIN;
     } else if (adm.guest_password[0] && strcmp(password, (const char*)adm.guest_password) == 0) {
@@ -620,19 +643,19 @@ static uint8_t cmd_perm_needed(const char* text) {
 // RESPONSE (p=1) = [their_ts(4)][response_data]. Implements REQ_TYPE_GET_STATUS
 // (0x01, guest-accessible) → RepeaterStats; other types are logged + dumped.
 static bool handle_req(const uint8_t* pl, int plen) {
-    if (plen < 2 + 2 + 5) { slog("REQ: short plen=%d", plen); return false; }
+    if (plen < 2 + 2 + 5) { slog("REQ short"); return false; }
     uint8_t src_hash = pl[1];
     AclEntry* e = acl_by_hash(src_hash);
-    if (!e) { slog("REQ: no session src=%02X", src_hash); return false; }
+    if (!e) { slog("REQ no sess"); return false; }
 
     static uint8_t data[160];   // static: keep the 1 KB stack small
     memset(data, 0, sizeof(data));
     int len = mesh_mac_then_decrypt(e->secret, data, pl + 2, plen - 2);
-    if (len < 5) { slog("REQ: MAC fail/short src=%02X len=%d", src_hash, len); return false; }
+    if (len < 5) { slog("REQ MAC fail"); return false; }
 
     uint32_t their_ts; memcpy(&their_ts, data, 4);   // request timestamp
     uint8_t req_type = data[4];
-    slog("REQ src=%02X type=0x%02X", src_hash, req_type);
+    dlog("REQ src=%02X type=0x%02X", src_hash, req_type);
 
     static uint8_t resp[64];
     if (req_type == REQ_GET_STATS) {
@@ -665,17 +688,17 @@ static bool handle_req(const uint8_t* pl, int plen) {
         return true;
     }
     // Unknown request type: log + dump the request fields, no reply.
-    slog("REQ: unhandled type=0x%02X", req_type);
+    slog("REQ unhandled type=0x%02X", req_type);
     hex_dump(data + 4, len - 4, 24);
     return true;
 }
 
 // TXT_MSG: payload = [dest_hash][src_hash][MAC+AES(ts(4)+flags(1)+text)]
 static bool handle_txt_msg(const uint8_t* pl, int plen) {
-    if (plen < 2 + 2 + 5) { slog("TXM: short plen=%d", plen); return false; }
+    if (plen < 2 + 2 + 5) { slog("TXM short"); return false; }
     uint8_t src_hash = pl[1];
     AclEntry* e = acl_by_hash(src_hash);
-    if (!e) { slog("TXM: no session src=%02X (acl=%d)", src_hash, acl_count()); return false; }   // unknown session
+    if (!e) { slog("TXM no sess"); return false; }   // unknown session
 
     static uint8_t data[160];   // static: keep the 1 KB stack small
     memset(data, 0, sizeof(data));
@@ -685,25 +708,24 @@ static bool handle_txt_msg(const uint8_t* pl, int plen) {
     // the byte right after the text is a real 0, so strnlen/strchr stop there
     // instead of reading stale bytes from a previous message.
     int len = mesh_mac_then_decrypt(e->secret, data, pl + 2, plen - 2);
-    if (len < 5) { slog("TXM: MAC fail src=%02X", src_hash); return false; }
+    if (len < 5) { slog("TXM MAC fail"); return false; }
     uint32_t their_ts; memcpy(&their_ts, data, 4);
     uint8_t flags = data[4] >> 2;
     const char* text = (const char*)(data + 5);
 
-    // Diagnostic: hex dump of the FULL decrypted command text. Exposes
-    // multi-var / multi-get batches and any non-printable byte separators
-    // (20 bytes/line, offset-prefixed; capped at 64 bytes = plenty).
+    // Verbose (USB only): hex dump of the FULL decrypted command text, to expose
+    // multi-var / multi-get batches and any non-printable separators.
     {
         int tl = (int)strnlen(text, 150);
         if (tl > 64) tl = 64;
-        slog("TXM dec=%d txtlen=%d hex:", len, tl);
+        dlog("TXM dec=%d txtlen=%d hex:", len, tl);
         for (int off = 0; off < tl; off += 20) {
             static char hb[48];
-            int n = snprintf(hb, sizeof(hb), "%02d:", off);
+            int n = snprintf(hb, sizeof(hb), "  %02d:", off);
             int cnt = (tl - off > 20) ? 20 : (tl - off);
             for (int i = 0; i < cnt && n < 46; i++)
                 n += snprintf(hb + n, sizeof(hb) - n, "%02X", (unsigned)data[5 + off + i]);
-            console_log(hb);
+            Serial1.println(hb);
         }
     }
 
@@ -723,30 +745,30 @@ static bool handle_txt_msg(const uint8_t* pl, int plen) {
             cmd = p + 1;
         }
     }
-    slog("TXM: ok src=%02X fl=%d sess='%s' cmd='%s'", src_hash, flags, sess_len ? sess : "-", cmd);
+    dlog("TXM src=%02X fl=%d cmd='%s'", src_hash, flags, cmd);
 
     // The app sends commands as TXT_TYPE_CLI_DATA (1) or TXT_TYPE_CLI_COMMAND (3);
     // both mean "run this". Genuine command *replies* are addressed to the client,
     // never to us, so accepting both can't mis-fire here.
     if (flags != TXT_TYPE_CLI_COMMAND && flags != TXT_TYPE_CLI_DATA) {
-        slog("TXM: not cmd fl=%d", flags); return false;
+        slog("TXM not cmd"); return false;
     }
-    if (e->perms < cmd_perm_needed(cmd)) { slog("TXM: perms deny (p=%d)", e->perms); return false; }
+    if (e->perms < cmd_perm_needed(cmd)) { slog("TXM deny"); return false; }
 
-    static char reply[150];
+    static char reply[176];
     int rlen = cli_execute(cmd, reply, sizeof(reply));
     int prefix_len = sess_len ? (sess_len + 1) : 0;   // "<sess>|"
-    if (rlen > 148 - prefix_len) rlen = 148 - prefix_len;   // keep under the 150-byte cap
+    if (rlen > 171 - prefix_len) rlen = 171 - prefix_len;   // keep ts(4)+flags(1)+text ≤ 176
 
     // reply as TXT_MSG CLI_DATA: [ts(4)][flags=CLI_DATA<<2][<sess>|]<reply>
-    static uint8_t out[165];
+    static uint8_t out[180];
     uint32_t now = ts_base + millis() / 1000;
     memcpy(out, &now, 4);
     out[4] = (uint8_t)(TXT_TYPE_CLI_DATA << 2);
     int o = 5;
     if (prefix_len) { memcpy(out + o, sess, sess_len); out[o + sess_len] = '|'; o += prefix_len; }
     memcpy(out + o, reply, rlen);
-    slog("TXM: reply %d bytes (prefix=%d)", rlen, prefix_len);
+    dlog("TXM reply %d bytes", rlen);
     send_admin_reply(PAYLOAD_TYPE_TXT_MSG, &e->pub[0], e->secret, out, o + rlen);
 
     e->last_activity_ms = millis();
@@ -755,7 +777,7 @@ static bool handle_txt_msg(const uint8_t* pl, int plen) {
 }
 
 static bool process_pkt(const uint8_t* data, int len) {
-    if (len < 3) { slog("Drop: malformed"); return false; }
+    if (len < 3) { dlog("Drop: malformed"); return false; }
 
     uint8_t header = data[0];
     uint8_t route  = header & 0x03;
@@ -770,7 +792,7 @@ static bool process_pkt(const uint8_t* data, int len) {
     uint8_t ptype     = (header >> 2) & 0x0F;
 
     int path_bytes = hop_count * hash_size;
-    if (idx + path_bytes > len) { slog("Drop: malformed"); return false; }
+    if (idx + path_bytes > len) { dlog("Drop: malformed"); return false; }
 
     const uint8_t* path_ptr    = data + idx;
     const uint8_t* payload_ptr = data + idx + path_bytes;
@@ -782,7 +804,7 @@ static bool process_pkt(const uint8_t* data, int len) {
     if (payload_len >= 2) {
         char fp[9];
         short_fp(payload_ptr, ptype, (uint8_t)payload_len, fp);
-        slog("RX p=%d d=%02X s=%02X hc=%d fp=%s", ptype, payload_ptr[0], payload_ptr[1], (int)hop_count, fp);
+        dlog("RX p=%d d=%02X s=%02X hc=%d fp=%s", ptype, payload_ptr[0], payload_ptr[1], (int)hop_count, fp);
     }
 
     // ── Neighbor cache: record every ADVERT we hear ──────────────────────────
@@ -797,13 +819,13 @@ static bool process_pkt(const uint8_t* data, int len) {
     // Handled (or dropped) here; never relayed. Packets not addressed to us fall
     // through and are relayed normally (propagating a login to other repeaters).
     if (ptype == PAYLOAD_TYPE_ANON_REQ || ptype == PAYLOAD_TYPE_TXT_MSG || ptype == PAYLOAD_TYPE_RESPONSE || ptype == PAYLOAD_TYPE_REQ) {
-        // DIAGNOSTIC: log admin packets + whether they're addressed to us
+        // Verbose trace of admin packets (USB only): dst/src, whether addressed to us.
         if (ptype == PAYLOAD_TYPE_ANON_REQ)
-            slog("ANON dst=%02X src? own=%02X hc=%d %s", payload_ptr[0], own_hash, hop_count, payload_ptr[0]==own_hash?"US":"relay");
+            dlog("ANON dst=%02X own=%02X hc=%d %s", payload_ptr[0], own_hash, hop_count, payload_ptr[0]==own_hash?"US":"relay");
         else if (ptype == PAYLOAD_TYPE_TXT_MSG && payload_len >= 2)
-            slog("TXM  dst=%02X src=%02X own=%02X hc=%d %s", payload_ptr[0], payload_ptr[1], own_hash, hop_count, payload_ptr[0]==own_hash?"US":"relay");
+            dlog("TXM  dst=%02X src=%02X own=%02X hc=%d %s", payload_ptr[0], payload_ptr[1], own_hash, hop_count, payload_ptr[0]==own_hash?"US":"relay");
         else if (ptype == PAYLOAD_TYPE_REQ && payload_len >= 2)
-            slog("REQ  dst=%02X src=%02X own=%02X hc=%d %s", payload_ptr[0], payload_ptr[1], own_hash, hop_count, payload_ptr[0]==own_hash?"US":"relay");
+            dlog("REQ  dst=%02X src=%02X own=%02X hc=%d %s", payload_ptr[0], payload_ptr[1], own_hash, hop_count, payload_ptr[0]==own_hash?"US":"relay");
         if (payload_len >= 2 && payload_ptr[0] == own_hash) {
             // Record + dedup the addressed-to-us packet. This block returns
             // before the flood-relay dedup below, so without this a re-relayed
@@ -811,7 +833,7 @@ static bool process_pkt(const uint8_t* data, int len) {
             // back through another repeater would be reprocessed, re-sending the
             // reply — the duplicate the companion was seeing.
             if (dedup_seen(payload_ptr, ptype, (uint8_t)payload_len)) {
-                slog("Drop: dedup admin");
+                dlog("Drop dedup");
                 return false;
             }
             if (ptype == PAYLOAD_TYPE_ANON_REQ) handle_anon_req(payload_ptr, payload_len);
@@ -833,11 +855,11 @@ static bool process_pkt(const uint8_t* data, int len) {
 
                 if (dedup_seen(relay_buf, ptype, (uint8_t)relay_len)) {
                     stat_direct_dups++;
-                    slog("Drop: dedup direct");
+                    dlog("Drop dedup");
                     return false;
                 }
 
-                slog("Relay direct");
+                dlog("Relay direct");
                 no_delay = true;
                 return true;
             }
@@ -862,15 +884,24 @@ static bool process_pkt(const uint8_t* data, int len) {
     // ── FLOOD routing (ROUTE_FLOOD 0x01 + ROUTE_TRANSPORT_FLOOD 0x00) ────────
 
     // Guard: relay disabled via CLI (`set repeat off`)
-    if (!cfg.repeat_en) { slog("Drop: repeat off"); return false; }
+    if (!cfg.repeat_en) { dlog("Drop: repeat off"); return false; }
 
     // Guard: max hops
     if (hop_count >= (cfg.flood_max ? cfg.flood_max : MAX_HOPS)) {
-        slog("Drop: max hops"); return false;
+        dlog("Drop: max hops"); return false;
     }
 
     // Guard: payload sanity
-    if (payload_len < 1) { slog("Drop: malformed"); return false; }
+    if (payload_len < 1) { dlog("Drop: malformed"); return false; }
+
+    // PATH (0x08) addressed to us: a returned-path request to us, not relevant
+    // to a repeater. Do NOT relay it — the relay's 300-800 ms CSMA backoff blocks
+    // the main loop right when the app's next command arrives (this is what was
+    // timing out `get lon` in Get Position). Relay p=8 only when NOT addressed to us.
+    if (ptype == PAYLOAD_TYPE_PATH && payload_ptr[0] == own_hash) {
+        dlog("Drop: PATH to us");
+        return false;
+    }
 
     // Self-pickup guard: with a detached / weak antenna we can RX our own TX.
     // A few bits flip in transit, so the payload (and fingerprint) differ from
@@ -879,7 +910,7 @@ static bool process_pkt(const uint8_t* data, int len) {
     // it (and hex-dump it so we can confirm it's a corrupted self-pickup).
     if ((ptype == PAYLOAD_TYPE_TXT_MSG || ptype == PAYLOAD_TYPE_ANON_REQ || ptype == PAYLOAD_TYPE_RESPONSE)
         && payload_len >= 2 && payload_ptr[1] == own_hash) {
-        slog("Drop: self-pickup src=us fp");
+        dlog("Drop self-pickup");
         hex_dump(payload_ptr, payload_len, 24);
         return false;
     }
@@ -887,7 +918,7 @@ static bool process_pkt(const uint8_t* data, int len) {
     // Dedup check
     if (dedup_seen(payload_ptr, ptype, (uint8_t)payload_len)) {
         stat_flood_dups++;
-        slog("Drop: dedup flood");
+        dlog("Drop dedup");
         hex_dump(payload_ptr, payload_len, 24);
         return false;
     }
@@ -897,7 +928,7 @@ static bool process_pkt(const uint8_t* data, int len) {
     if (cfg.loop_detect != 0) {
         for (int j = 0; j < hop_count; j++) {
             if (path_ptr[j * hash_size] == own_hash) {
-                slog("Drop: our hash in path");
+                dlog("Drop loop");
                 hex_dump(payload_ptr, payload_len, 24);
                 return false;
             }
@@ -914,7 +945,7 @@ static bool process_pkt(const uint8_t* data, int len) {
 
     // Old path hashes
     if (relay_len + path_bytes + hash_size + payload_len >= MAX_PKT) {
-        slog("Drop: relay too large");
+        dlog("Drop too large");
         return false;
     }
     memcpy(relay_buf + relay_len, path_ptr, path_bytes);
@@ -930,7 +961,7 @@ static bool process_pkt(const uint8_t* data, int len) {
     memcpy(relay_buf + relay_len, payload_ptr, payload_len);
     relay_len += payload_len;
 
-    slog("Relay hop=%u", (unsigned)new_hop);
+    dlog("Relay hop=%u", (unsigned)new_hop);
     return true;
 }
 
@@ -992,7 +1023,8 @@ static uint32_t last_local_advert = 0;
 static uint32_t last_flood_advert = 0;
 static bool     first_advert      = false;
 static bool     rx_started        = false;
-static uint32_t last_beat_ms      = 0;
+static uint32_t last_beat_ms      = 0;   // LED heartbeat (10 s)
+static uint32_t last_alive_ms     = 0;   // ALIVE log line (60 s)
 static bool     advert_pending    = false;      // CLI-triggered advert
 static bool     advert_zerohop    = false;
 static uint8_t  discovery_burst   = 0;          // zero-hop burst remaining
@@ -1075,13 +1107,17 @@ void loop(void) {
         return;
     }
 
-    // ── Heartbeat every 10 s ─────────────────────────────────────────────────
+    // ── LED heartbeat every 10 s ─────────────────────────────────────────────
     if (now - last_beat_ms >= 10000UL) {
         last_beat_ms = now;
-        slog("ALIVE uptime=%lus ts=%lu rx=%lu relay=%lu drop=%lu",
-             (unsigned long)(now / 1000), (unsigned long)cli_now_epoch(),
-             (unsigned long)stat_rx, (unsigned long)stat_relay, (unsigned long)stat_drop);
         led_blink(1, 80);   // heartbeat blink every 10 s
+    }
+    // ── ALIVE log line every 60 s (keeps the remote log ring uncluttered) ─────
+    if (now - last_alive_ms >= 60000UL) {
+        last_alive_ms = now;
+        slog("ALIVE up=%lus rx=%lu relay=%lu drop=%lu",
+             (unsigned long)(now / 1000),
+             (unsigned long)stat_rx, (unsigned long)stat_relay, (unsigned long)stat_drop);
     }
 
     // ── Expire idle mesh-admin sessions (admin.timeout seconds) ──────────────

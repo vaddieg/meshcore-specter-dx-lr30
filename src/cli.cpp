@@ -19,7 +19,7 @@ extern SX1262 radio;
 
 // ─── Line reader ────────────────────────────────────────────────────────────
 // Console log ring: diagnostics captured, printed on demand via `log`
-#define LOG_LINES 32
+#define LOG_LINES 64
 #define LOG_LEN   48
 static char    log_buf[LOG_LINES][LOG_LEN];
 static uint8_t log_head = 0;    // next slot to write
@@ -556,22 +556,34 @@ static void set_flood_max(int argc, char** argv) {
 
 // ─── Mesh-admin configuration ────────────────────────────────────────────────
 static void set_admin_password(int argc, char** argv) {
-    if (argc < 3) { out("Err: usage: set admin.password <password>  (empty disables mesh admin)"); return; }
-    const char* pw = argv[2];
+    const char* pw = (argc >= 3) ? argv[2] : "";   // no value → clear the password
     if ((int)strlen(pw) >= (int)sizeof(adm.admin_password)) { out("Err: too long (max 23)"); return; }
     strncpy(adm.admin_password, pw, sizeof(adm.admin_password));
     adm.admin_password[sizeof(adm.admin_password) - 1] = '\0';
     prefs_save();
     out(strlen(pw) ? "OK (admin enabled)" : "OK (admin disabled)");
 }
+
+// Official shortcut: "password <pwd>" sets the admin password and echoes it back
+// (so the operator can confirm it took). Equivalent to "set admin.password <pwd>".
+static void cmd_password(int argc, char** argv) {
+    if (argc < 2) { out("Err: usage: password <password>  (sets admin password)"); return; }
+    const char* pw = argv[1];
+    if ((int)strlen(pw) >= (int)sizeof(adm.admin_password)) { out("Err: too long (max 23)"); return; }
+    strncpy(adm.admin_password, pw, sizeof(adm.admin_password));
+    adm.admin_password[sizeof(adm.admin_password) - 1] = '\0';
+    prefs_save();
+    char buf[40];
+    snprintf(buf, sizeof(buf), "password now: %s", pw);
+    out(buf);
+}
 static void set_guest_password(int argc, char** argv) {
-    if (argc < 3) { out("Err: usage: set guest.password <password>  (empty disables guest)"); return; }
-    const char* pw = argv[2];
+    const char* pw = (argc >= 3) ? argv[2] : "";   // no value → clear the password
     if ((int)strlen(pw) >= (int)sizeof(adm.guest_password)) { out("Err: too long (max 23)"); return; }
     strncpy(adm.guest_password, pw, sizeof(adm.guest_password));
     adm.guest_password[sizeof(adm.guest_password) - 1] = '\0';
     prefs_save();
-    out(strlen(pw) ? "OK (guest enabled)" : "OK (guest disabled)");
+    out(strlen(pw) ? "OK (guest: password required)" : "OK (guest: open, blank password)");
 }
 static void set_admin_timeout(int argc, char** argv) {
     if (argc < 3) { out("Err: usage: set admin.timeout <seconds>  (0 = never expire)"); return; }
@@ -665,6 +677,7 @@ static void handle_line(char* raw) {
     else if (!strcmp(c, "stats-packets"))                   { FINISH(cmd_stats_packets()); }
     else if (!strcmp(c, "time"))                            { cmd_time(argc, argv); done = true; }
     else if (!strcmp(c, "advert"))                          { cmd_advert(argc, argv); done = true; }
+    else if (!strcmp(c, "password"))                        { cmd_password(argc, argv); done = true; }
 
     // "get <thing>"
     else if (!strcmp(c, "get")) {
