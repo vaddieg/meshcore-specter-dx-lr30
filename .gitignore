@@ -10,3 +10,9 @@ logs/
 *.log
 
 .vscode
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
