@@ -33,12 +33,63 @@
 #define FW_VERSION "1.15.0"
 
 // ─── Mesh-admin payload types (matching MeshCore) ────────────────────────────
+#define PAYLOAD_TYPE_REQ        0x00   // Request (dest/src hashes + MAC)
 #define PAYLOAD_TYPE_RESPONSE   0x01
 #define PAYLOAD_TYPE_TXT_MSG    0x02
 #define PAYLOAD_TYPE_ANON_REQ   0x07
+// REQ request-type bytes (BaseChatMesh):
+#define  REQ_GET_STATS          0x01   // repeater/server stats (get stats)
+#define  REQ_GET_TELEMETRY      0x03
+#define  REQ_GET_ACL            0x05
+#define  REQ_GET_NEIGHBORS      0x06
 #define TXT_TYPE_CLI_DATA       1
 #define TXT_TYPE_CLI_COMMAND    3
 #define RESP_SERVER_LOGIN_OK    0
+
+// ─── Repeater stats (REQ_TYPE_GET_STATUS response) ───────────────────────────
+// Byte-exact port of the official simple_repeater RepeaterStats: 56 bytes,
+// little-endian, no padding (every field is 2- or 4-byte aligned). The response
+// plaintext is [sender_timestamp(4)][RepeaterStats] — the sender's ts is
+// reflected back as a correlation 'tag'.
+struct RepeaterStats {
+    uint16_t batt_milli_volts;
+    uint16_t curr_tx_queue_len;
+    int16_t  noise_floor;
+    int16_t  last_rssi;
+    uint32_t n_packets_recv;
+    uint32_t n_packets_sent;
+    uint32_t total_air_time_secs;
+    uint32_t total_up_time_secs;
+    uint32_t n_sent_flood, n_sent_direct;
+    uint32_t n_recv_flood, n_recv_direct;
+    uint16_t err_events;
+    int16_t  last_snr;                    // x 4
+    uint16_t n_direct_dups, n_flood_dups;
+    uint32_t total_rx_air_time_secs;
+    uint32_t n_recv_errors;
+};
+static_assert(sizeof(RepeaterStats) == 56,
+              "RepeaterStats must be exactly 56 bytes (byte-exact with the official)");
+
+// Live accumulators (populated in the RX/TX paths; read by handle_req)
+static int16_t  stat_last_rssi   = 0;   // last received RSSI (dBm)
+static int16_t  stat_last_snr_x4 = 0;   // last received SNR (x4)
+static uint32_t stat_tx_air_ms   = 0;   // cumulative TX air time (ms)
+static uint32_t stat_rx_air_ms   = 0;   // cumulative RX air time (ms)
+static uint32_t stat_sent_flood  = 0;
+static uint32_t stat_sent_direct = 0;
+static uint32_t stat_recv_flood  = 0;
+static uint32_t stat_recv_direct = 0;
+static uint32_t stat_direct_dups = 0;
+static uint32_t stat_flood_dups  = 0;
+static uint32_t stat_recv_errors = 0;   // CRC / read errors
+
+// Basic packet statistics (declared here so handle_req / the stats response can
+// use them; the RX/TX paths below increment them)
+uint32_t stat_rx     = 0;   // valid packets received from radio
+uint32_t stat_relay  = 0;   // packets successfully relayed
+uint32_t stat_drop   = 0;   // packets rejected (dedup/hops/malformed)
+uint32_t stat_advert = 0;   // adverts transmitted
 
 // ─── Pin definitions ─────────────────────────────────────────────────────────
 #define PIN_NSS   PA4
@@ -166,6 +217,33 @@ static bool dedup_seen(const uint8_t* payload, uint8_t ptype, uint8_t plen) {
     memcpy(dedup_buf[dedup_head], fp, DEDUP_FP);
     dedup_head = (dedup_head + 1) % DEDUP_SIZE;
     return false;
+}
+
+// Short fingerprint (first 4 bytes of SHA256(ptype||payload), 8 hex chars) for
+// TX/RX correlation in the log: if an RX fp matches a recent TX fp, that sent
+// packet is coming back (self-pickup or a peer echo/ACK).
+static void short_fp(const uint8_t* payload, uint8_t ptype, uint8_t plen, char* out) {
+    SHA256 sha;
+    sha.reset();
+    sha.update(&ptype, 1);
+    sha.update(payload, plen);
+    uint8_t full[32];
+    sha.finalize(full, 32);
+    snprintf(out, 9, "%02X%02X%02X%02X", full[0], full[1], full[2], full[3]);
+}
+
+// Hex dump a buffer (up to `max` bytes) to the log, 16 bytes/line, to inspect
+// the content of a dropped / unexpected packet.
+static void hex_dump(const uint8_t* buf, int len, int max) {
+    if (len > max) len = max;
+    for (int off = 0; off < len; off += 16) {
+        static char hb[48];
+        int n = snprintf(hb, sizeof(hb), "%02d:", off);
+        int cnt = (len - off > 16) ? 16 : (len - off);
+        for (int i = 0; i < cnt && n < 46; i++)
+            n += snprintf(hb + n, sizeof(hb) - n, "%02X", (unsigned)buf[off + i]);
+        console_log(hb);
+    }
 }
 
 // ─── RF switch helpers ───────────────────────────────────────────────────────
@@ -363,9 +441,28 @@ uint32_t get_tx_budget_ms(void) {
     return tx_budget_ms;
 }
 
+static void slog(const char* fmt, ...);   // fwd decl: used by send_pkt's TX log
+
 // ─── Send a packet (with RF switch + token-bucket duty-cycle gating) ─────────
 static bool send_pkt(const uint8_t* buf, int len) {
     rf_idle();
+
+    // TX log (RX/TX correlation): ptype, first 2 payload bytes (dest/src for
+    // admin, pubkey for advert), hop count, fingerprint. If an RX fp later
+    // matches this fp, this packet is coming back to us.
+    if (len >= 3) {
+        uint8_t ptype    = (buf[0] >> 2) & 0x0F;
+        uint8_t path_hdr = buf[1];
+        uint8_t hc  = path_hdr & 0x3F;
+        uint8_t hs  = ((path_hdr >> 6) & 0x03) + 1;
+        int  pb  = hc * hs;
+        if (len >= 2 + pb + 2) {
+            const uint8_t* pl = buf + 2 + pb;
+            char fp[9];
+            short_fp(pl, ptype, (uint8_t)(len - 2 - pb), fp);
+            slog("TX p=%d d=%02X s=%02X hc=%d fp=%s", ptype, pl[0], pl[1], (int)hc, fp);
+        }
+    }
 
     if (no_delay) {
         delay(10);
@@ -385,6 +482,14 @@ static bool send_pkt(const uint8_t* buf, int len) {
     int      state = radio.transmit(const_cast<uint8_t*>(buf), len);
     uint32_t airtime = millis() - tx0;   // actual on-air time
     rf_idle();
+
+    // Accumulate TX stats (air time + flood/direct counts)
+    stat_tx_air_ms += airtime;
+    {
+        uint8_t route = buf[0] & 0x03;
+        if (route == ROUTE_DIRECT || route == ROUTE_TRANSPORT_DIRECT) stat_sent_direct++;
+        else                                                          stat_sent_flood++;
+    }
 
     // Consume the measured airtime from the budget
     if (state == RADIOLIB_ERR_NONE && cfg.dutycycle > 0 && cfg.dutycycle < 100) {
@@ -510,6 +615,61 @@ static uint8_t cmd_perm_needed(const char* text) {
     return PERM_ADMIN;
 }
 
+// REQ (p=0): payload = [dest_hash][src_hash][MAC+AES(ts(4)+req_type(1)+fields)].
+// Decrypt with the session secret, dispatch by request type, and reply with a
+// RESPONSE (p=1) = [their_ts(4)][response_data]. Implements REQ_TYPE_GET_STATUS
+// (0x01, guest-accessible) → RepeaterStats; other types are logged + dumped.
+static bool handle_req(const uint8_t* pl, int plen) {
+    if (plen < 2 + 2 + 5) { slog("REQ: short plen=%d", plen); return false; }
+    uint8_t src_hash = pl[1];
+    AclEntry* e = acl_by_hash(src_hash);
+    if (!e) { slog("REQ: no session src=%02X", src_hash); return false; }
+
+    static uint8_t data[160];   // static: keep the 1 KB stack small
+    memset(data, 0, sizeof(data));
+    int len = mesh_mac_then_decrypt(e->secret, data, pl + 2, plen - 2);
+    if (len < 5) { slog("REQ: MAC fail/short src=%02X len=%d", src_hash, len); return false; }
+
+    uint32_t their_ts; memcpy(&their_ts, data, 4);   // request timestamp
+    uint8_t req_type = data[4];
+    slog("REQ src=%02X type=0x%02X", src_hash, req_type);
+
+    static uint8_t resp[64];
+    if (req_type == REQ_GET_STATS) {
+        // Reply = [their_ts(4)][RepeaterStats(56)] — reflect the request ts as
+        // the correlation tag, then the stats (guest-accessible).
+        memcpy(resp, data, 4);
+        RepeaterStats s;
+        s.batt_milli_volts       = 0;                 // no battery
+        s.curr_tx_queue_len      = 0;                 // no TX queue
+        s.noise_floor            = 0;                 // not tracked
+        s.last_rssi              = stat_last_rssi;
+        s.n_packets_recv         = stat_rx;
+        s.n_packets_sent         = stat_sent_flood + stat_sent_direct;
+        s.total_air_time_secs    = stat_tx_air_ms / 1000;
+        s.total_up_time_secs     = millis() / 1000;
+        s.n_sent_flood           = stat_sent_flood;
+        s.n_sent_direct          = stat_sent_direct;
+        s.n_recv_flood           = stat_recv_flood;
+        s.n_recv_direct          = stat_recv_direct;
+        s.err_events             = 0;                 // no error flags
+        s.last_snr               = stat_last_snr_x4;
+        s.n_direct_dups          = (uint16_t)stat_direct_dups;
+        s.n_flood_dups           = (uint16_t)stat_flood_dups;
+        s.total_rx_air_time_secs = stat_rx_air_ms / 1000;
+        s.n_recv_errors          = stat_recv_errors;
+        memcpy(resp + 4, &s, sizeof(s));
+        send_admin_reply(PAYLOAD_TYPE_RESPONSE, &e->pub[0], e->secret, resp, 4 + sizeof(s));
+        e->last_activity_ms = millis();
+        if (their_ts > e->last_ts) e->last_ts = their_ts;
+        return true;
+    }
+    // Unknown request type: log + dump the request fields, no reply.
+    slog("REQ: unhandled type=0x%02X", req_type);
+    hex_dump(data + 4, len - 4, 24);
+    return true;
+}
+
 // TXT_MSG: payload = [dest_hash][src_hash][MAC+AES(ts(4)+flags(1)+text)]
 static bool handle_txt_msg(const uint8_t* pl, int plen) {
     if (plen < 2 + 2 + 5) { slog("TXM: short plen=%d", plen); return false; }
@@ -616,6 +776,15 @@ static bool process_pkt(const uint8_t* data, int len) {
     const uint8_t* payload_ptr = data + idx + path_bytes;
     int            payload_len = len - idx - path_bytes;
 
+    // RX log (RX/TX correlation): ptype, first 2 payload bytes (dest/src for
+    // admin, pubkey for advert), hop count, fingerprint. If this fp matches a
+    // recent TX fp, our own packet is coming back (self-pickup or a peer echo).
+    if (payload_len >= 2) {
+        char fp[9];
+        short_fp(payload_ptr, ptype, (uint8_t)payload_len, fp);
+        slog("RX p=%d d=%02X s=%02X hc=%d fp=%s", ptype, payload_ptr[0], payload_ptr[1], (int)hop_count, fp);
+    }
+
     // ── Neighbor cache: record every ADVERT we hear ──────────────────────────
     if (ptype == PAYLOAD_ADVERT && payload_len >= 40) {
         uint32_t adv_ts;
@@ -627,12 +796,14 @@ static bool process_pkt(const uint8_t* data, int len) {
     // ── Mesh-admin packets addressed to us (dest_hash == own_hash) ──────────
     // Handled (or dropped) here; never relayed. Packets not addressed to us fall
     // through and are relayed normally (propagating a login to other repeaters).
-    if (ptype == PAYLOAD_TYPE_ANON_REQ || ptype == PAYLOAD_TYPE_TXT_MSG || ptype == PAYLOAD_TYPE_RESPONSE) {
+    if (ptype == PAYLOAD_TYPE_ANON_REQ || ptype == PAYLOAD_TYPE_TXT_MSG || ptype == PAYLOAD_TYPE_RESPONSE || ptype == PAYLOAD_TYPE_REQ) {
         // DIAGNOSTIC: log admin packets + whether they're addressed to us
         if (ptype == PAYLOAD_TYPE_ANON_REQ)
             slog("ANON dst=%02X src? own=%02X hc=%d %s", payload_ptr[0], own_hash, hop_count, payload_ptr[0]==own_hash?"US":"relay");
         else if (ptype == PAYLOAD_TYPE_TXT_MSG && payload_len >= 2)
             slog("TXM  dst=%02X src=%02X own=%02X hc=%d %s", payload_ptr[0], payload_ptr[1], own_hash, hop_count, payload_ptr[0]==own_hash?"US":"relay");
+        else if (ptype == PAYLOAD_TYPE_REQ && payload_len >= 2)
+            slog("REQ  dst=%02X src=%02X own=%02X hc=%d %s", payload_ptr[0], payload_ptr[1], own_hash, hop_count, payload_ptr[0]==own_hash?"US":"relay");
         if (payload_len >= 2 && payload_ptr[0] == own_hash) {
             // Record + dedup the addressed-to-us packet. This block returns
             // before the flood-relay dedup below, so without this a re-relayed
@@ -645,6 +816,7 @@ static bool process_pkt(const uint8_t* data, int len) {
             }
             if (ptype == PAYLOAD_TYPE_ANON_REQ) handle_anon_req(payload_ptr, payload_len);
             else if (ptype == PAYLOAD_TYPE_TXT_MSG) handle_txt_msg(payload_ptr, payload_len);
+            else if (ptype == PAYLOAD_TYPE_REQ) handle_req(payload_ptr, payload_len);
             return false;
         }
     }
@@ -660,6 +832,7 @@ static bool process_pkt(const uint8_t* data, int len) {
                 memcpy(relay_buf, data, len);
 
                 if (dedup_seen(relay_buf, ptype, (uint8_t)relay_len)) {
+                    stat_direct_dups++;
                     slog("Drop: dedup direct");
                     return false;
                 }
@@ -699,9 +872,23 @@ static bool process_pkt(const uint8_t* data, int len) {
     // Guard: payload sanity
     if (payload_len < 1) { slog("Drop: malformed"); return false; }
 
+    // Self-pickup guard: with a detached / weak antenna we can RX our own TX.
+    // A few bits flip in transit, so the payload (and fingerprint) differ from
+    // the markSeen'd original — the dedup misses it and we'd relay our own
+    // reply. If an admin packet's src is us, it's our own transmission: drop
+    // it (and hex-dump it so we can confirm it's a corrupted self-pickup).
+    if ((ptype == PAYLOAD_TYPE_TXT_MSG || ptype == PAYLOAD_TYPE_ANON_REQ || ptype == PAYLOAD_TYPE_RESPONSE)
+        && payload_len >= 2 && payload_ptr[1] == own_hash) {
+        slog("Drop: self-pickup src=us fp");
+        hex_dump(payload_ptr, payload_len, 24);
+        return false;
+    }
+
     // Dedup check
     if (dedup_seen(payload_ptr, ptype, (uint8_t)payload_len)) {
+        stat_flood_dups++;
         slog("Drop: dedup flood");
+        hex_dump(payload_ptr, payload_len, 24);
         return false;
     }
 
@@ -711,6 +898,7 @@ static bool process_pkt(const uint8_t* data, int len) {
         for (int j = 0; j < hop_count; j++) {
             if (path_ptr[j * hash_size] == own_hash) {
                 slog("Drop: our hash in path");
+                hex_dump(payload_ptr, payload_len, 24);
                 return false;
             }
         }
@@ -809,12 +997,6 @@ static bool     advert_pending    = false;      // CLI-triggered advert
 static bool     advert_zerohop    = false;
 static uint8_t  discovery_burst   = 0;          // zero-hop burst remaining
 static uint32_t last_burst_ms     = 0;
-
-// ─── Packet statistics ───────────────────────────────────────────────────────
-uint32_t stat_rx    = 0;   // valid packets received from radio
-uint32_t stat_relay = 0;   // packets successfully relayed
-uint32_t stat_drop  = 0;   // packets rejected (dedup/hops/malformed)
-uint32_t stat_advert = 0;  // adverts transmitted
 
 // ─── Console log ring (declared in config.h, implemented in cli.cpp) ─────────
 // All runtime diagnostics go here instead of straight to serial; the user
@@ -1015,8 +1197,14 @@ void loop(void) {
             float rssi  = radio.getRSSI();
             int   snr   = (int)radio.getSNR();
             slog("RX RSSI=%d SNR=%d len=%d", (int)rssi, (int)snr, (int)rxlen);
+            stat_last_rssi   = (int16_t)rssi;          // last RX signal level
+            stat_last_snr_x4 = (int16_t)(snr * 4);     // last SNR, x4
+            stat_rx_air_ms  += radio_airtime_ms;       // rough per-packet RX air time
             if (rxlen > 0 && rxlen < MAX_PKT) {
                 stat_rx++;
+                uint8_t route = rxbuf[0] & 0x03;
+                if (route == ROUTE_DIRECT || route == ROUTE_TRANSPORT_DIRECT) stat_recv_direct++;
+                else                                                          stat_recv_flood++;
                 led_blink(1, 40);         // 1 blink = pkt received
                 rf_idle();
                 if (process_pkt(rxbuf, rxlen)) {
@@ -1028,7 +1216,7 @@ void loop(void) {
                 }
             }
         } else {
-            // CRC error or other read failure — re-arm and continue
+            stat_recv_errors++;   // CRC error or other read failure
             slog("readData err: %d", (int)state);
         }
     }
