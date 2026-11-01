@@ -6,8 +6,9 @@ All notable changes to SPECTER firmware are documented here.
 
 Adds **remote mesh administration**: SPECTER can now be administered over the
 LoRa mesh by an official MeshCore companion radio, byte-for-byte compatible
-with the companion firmware's peer-data protocol. USB remains the primary
-channel; this is field access.
+with the companion firmware's peer-data protocol — including the app's
+**Repeater Status** (`get stats`), so the whole companion UI works over the
+mesh. USB remains the primary channel; this is field access.
 
 ### Added
 - **Mesh admin protocol** (`src/main.cpp` + `src/acl.cpp`): a companion
@@ -26,16 +27,27 @@ channel; this is field access.
   ephemeral pubkey; holds the per-session shared secret + permission +
   replay-guard timestamp. A reboot ends all sessions.
 - **CLI**: `set/get admin.password`, `set/get guest.password`,
-  `set/get admin.timeout`, `acl` (list active sessions).
+  `set/get admin.timeout`, `acl` (list active sessions), and the official
+  `password <pwd>` shortcut (sets the admin password and echoes it back).
+- **`get stats` (REQ 0x01) → Repeater Status**: the app's *Repeater Status*
+  button now works. SPECTER answers the `REQ_TYPE_GET_STATUS` request with a
+  byte-exact `RepeaterStats` (56 B, little-endian — matching the official
+  `simple_repeater`): uptime, cumulative TX/RX airtime, last RX RSSI/SNR,
+  packet counts (recv/sent, flood/direct), direct/flood dups, recv errors.
+  Guest-accessible (read-only). Backed by new live counters populated in the
+  RX/TX paths (`stat_last_rssi`, `stat_tx/rx_air_ms`, `stat_sent/recv_flood/direct`,
+  `stat_direct/flood_dups`, `stat_recv_errors`).
 - **Permission model**: admin password → full (incl. `set`/`reboot`/`erase`/`dfu`);
   guest password → read-only (`get`, `stats-*`, `neighbors`, `log`, `acl`, …).
   Idle sessions expire after `admin.timeout` seconds (default 600; 0 = never).
 - **Boot LED signature** — 5 quick flashes the instant the app starts (before
   radio init), so a successful app boot is easy to distinguish from the ROM
   bootloader's solid LED (see [flashing.md](docs/flashing.md)).
-- **Mesh-admin diagnostic logging** — `ANON`/`TXM` lines in `log` show how each
-  login/command packet is addressed and where it succeeds/fails (session / MAC /
-  perms).
+- **Split logging** — `slog` (remote `log` ring + USB) carries terse operational
+  events (login, per-RX signal level, errors, `ALIVE`, adverts); a new `dlog`
+  (USB only) carries the verbose per-packet detail (fingerprint traces, command
+  hex dump, relay, drop reasons, `ANON`/`TXM`/`REQ`). The remote `log` is now a
+  clean, terse ring; the debugging detail stays on the USB console.
 
 ### Fixed
 - **X25519 scalar (critical interop bug)**: the key exchange must use the
@@ -62,9 +74,9 @@ channel; this is field access.
   corrupting any such command (`get name` → `get namet` / `get namert.interval`,
   intermittently, depending on what was in the buffer). The decrypt buffer is
   now pre-cleared to zero so the text boundary is always a real null.
-- **Full-message diagnostic**: each incoming TXT_MSG is hex-dumped to the log
-  (`TXM … hex:` + `sess='…' cmd='…'`), which is how the bug above was caught.
-  (Stripped before the release.)
+- **Full-message diagnostic**: each incoming TXT_MSG is hex-dumped (`TXM … hex:`
+  + `sess='…' cmd='…'`), which is how the bug above was caught. (Now USB-only via
+  `dlog`, so the remote `log` ring stays clean.)
 - **Duplicate replies** (two gaps, both fixed):
   1. *Reply side* — `send_admin_reply` now records its own fingerprint on TX
      (matching the official's `markSeen`, "in case it is rebroadcast back to us"),
@@ -75,6 +87,28 @@ channel; this is field access.
      copy of the *command* that looped back through another repeater was
      reprocessed, re-sending the reply. The admin block now records + drops
      duplicates (`Drop: dedup admin`).
+- **Get Position timeout (p=8 relayed)**: the app's `PAYLOAD_TYPE_PATH` (0x08)
+  returned-path packet, when addressed to us, was treated as an ordinary flood
+  and relayed. That relay's 300–800 ms CSMA backoff blocked the main loop right
+  as the app's `get lon` arrived, so `get lon` timed out (standalone `get lon`
+  worked fine). Now a p=8 addressed to us is dropped (a returned-path request is
+  irrelevant to a repeater); a p=8 *not* addressed to us is still relayed.
+
+### Changed
+- **Blank-password guest login** — with no guest password set, a blank password
+  is accepted as a guest (read-only) login, so the app's guest / Repeater-Status
+  path works with zero setup. A set guest password still requires the real
+  password.
+- **`set guest.password` / `set admin.password` clear on bare command** — running
+  the setter with no value clears the password (matching the official's "empty
+  value clears" semantics).
+- **Log ring 32 → 64 lines** (3 KB) and **mesh reply cap 150 → 176 B** (182 B
+  packet). The official caps `MAX_PACKET_PAYLOAD` at 184 B, so 176 B is the
+  one-packet interop ceiling — a larger reply is silently dropped by the
+  companion.
+- **LED heartbeat vs. `ALIVE`** — the LED still blinks every 10 s; the
+  `ALIVE up=… rx=… relay=… drop=…` log line now appears every 60 s (keeps the
+  remote ring from getting a line every 10 s).
 
 ### Notes (follow-ups)
 - The periodic **ADVERT** TX has the same not-marked-as-seen gap; it's less

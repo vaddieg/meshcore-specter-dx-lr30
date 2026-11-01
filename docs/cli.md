@@ -242,9 +242,10 @@ OK
 | `get direct.txdelay` / `set <0-2>` | `0.3` / `OK` | direct traffic delay factor |
 | `get dutycycle` / `set <1-100>` | `10` / `OK` | EU default 10 % |
 | `get flood.max` / `set <0-64>` | `64` / `OK` | max flood hops |
-| `set admin.password <pw>` | `OK` | **enables mesh admin** (empty = disabled); see §3.6 |
+| `password <pw>` | `password now: <pw>` | official shortcut: sets the admin password (echoes it back to confirm) |
+| `set admin.password <pw>` | `OK (admin enabled)` | **enables mesh admin**; bare `set admin.password` (no value) clears it → `OK (admin disabled)`; see §3.6 |
 | `get admin.password` | password / `(empty)` | |
-| `set guest.password <pw>` | `OK` | enables read-only guest mesh access (empty = disabled) |
+| `set guest.password <pw>` | `OK (guest: password required)` | enables read-only guest mesh access; bare `set guest.password` (no value) opens blank-password guest → `OK (guest: open, blank password)` |
 | `get guest.password` | password / `(empty)` | |
 | `set admin.timeout <s>` | `OK` | idle-session lifetime, seconds (0 = never); default 600 |
 | `get admin.timeout` | `600` | |
@@ -317,7 +318,10 @@ set admin.password <password>     # enables admin (full) mesh access
 set guest.password <password>     # optional: read-only guest access
 set admin.timeout 600             # idle session lifetime (s); 0 = never
 ```
-An empty `admin.password` disables mesh admin entirely. Passwords are stored
+A bare `set admin.password` / `set guest.password` (no value) **clears** the
+password. With **no guest password set**, a blank-password login gets
+read-only guest access (so the app's Repeater Status works with zero setup);
+with **no admin password set**, admin mesh access is off. Passwords are stored
 in a separate, versioned flash record (the node-config record is untouched,
 so an `erase` of the old layout still works).
 
@@ -344,9 +348,18 @@ so an `erase` of the old layout still works).
 `admin.timeout` seconds of inactivity. `acl` lists active sessions
 (`<pub-hash> <role>` lines).
 
+**Repeater Status (`get stats`):** the app's *Repeater Status* button is a
+`REQ_TYPE_GET_STATUS` (0x01) request. SPECTER answers it with a byte-exact
+56-byte `RepeaterStats` (uptime, cumulative TX/RX airtime, last RX RSSI/SNR,
+packet counts, dup/recv-error counters) — guest-accessible. So with **no
+passwords set**, a companion can log in as a blank-password guest and read the
+Repeater Status; set an admin password for full control.
+
 **Test it:** point a second radio running the official MeshCore companion
-firmware at SPECTER, log in with the admin password, and run e.g. `get name`
-/ `set name <n>` / `stats-core`. See [development-notes.md](development-notes.md#mesh-administration-protocol) for the full wire layout.
+firmware at SPECTER, log in with the admin password (or leave it blank for
+guest), and run e.g. `get name` / `set name <n>` / `stats-core` — or just
+press *Repeater Status* / *Get Position* in the app. See
+[development-notes.md](development-notes.md#mesh-administration-protocol) for the full wire layout.
 
 ## 4. Implementation plan
 
