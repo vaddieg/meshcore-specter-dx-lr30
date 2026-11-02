@@ -33,10 +33,14 @@ mesh. USB remains the primary channel; this is field access.
   button now works. SPECTER answers the `REQ_TYPE_GET_STATUS` request with a
   byte-exact `RepeaterStats` (56 B, little-endian — matching the official
   `simple_repeater`): uptime, cumulative TX/RX airtime, last RX RSSI/SNR,
-  packet counts (recv/sent, flood/direct), direct/flood dups, recv errors.
-  Guest-accessible (read-only). Backed by new live counters populated in the
-  RX/TX paths (`stat_last_rssi`, `stat_tx/rx_air_ms`, `stat_sent/recv_flood/direct`,
-  `stat_direct/flood_dups`, `stat_recv_errors`).
+  **noise floor**, packet counts (recv/sent, flood/direct), direct/flood dups,
+  recv errors. Guest-accessible (read-only). Backed by live counters in the
+  RX/TX paths (`stat_last_rssi`, `stat_noise_floor`, `stat_tx/rx_air_ms`,
+  `stat_sent/recv_flood/direct`, `stat_direct/flood_dups`, `stat_recv_errors`).
+  The **noise floor** is the ambient instantaneous RSSI (`getRSSI(false)` /
+  `GET_RSSI_INST`) while idle in RX — average of 10 quiet samples (below floor
+  + 14 dB, the official's `SAMPLING_THRESHOLD`), clamped to −120 dBi, sampled
+  every 100 ms; self-correcting, ignores transient signals.
 - **Permission model**: admin password → full (incl. `set`/`reboot`/`erase`/`dfu`);
   guest password → read-only (`get`, `stats-*`, `neighbors`, `log`, `acl`, …).
   Idle sessions expire after `admin.timeout` seconds (default 600; 0 = never).
@@ -48,6 +52,11 @@ mesh. USB remains the primary channel; this is field access.
   (USB only) carries the verbose per-packet detail (fingerprint traces, command
   hex dump, relay, drop reasons, `ANON`/`TXM`/`REQ`). The remote `log` is now a
   clean, terse ring; the debugging detail stays on the USB console.
+- **`log start` / `log stop`** — the per-packet RX signal line is now opt-in
+  to the remote ring (matching the official's `log start`/`log stop` `_logging`
+  gate). Off by default so a busy mesh doesn't flood the ring; `log start`
+  begins capturing RX RSSI/SNR/len into the ring, `log stop` ends it. The line
+  still prints to the USB console either way (live debug).
 
 ### Fixed
 - **X25519 scalar (critical interop bug)**: the key exchange must use the
@@ -109,6 +118,16 @@ mesh. USB remains the primary channel; this is field access.
 - **LED heartbeat vs. `ALIVE`** — the LED still blinks every 10 s; the
   `ALIVE up=… rx=… relay=… drop=…` log line now appears every 60 s (keeps the
   remote ring from getting a line every 10 s).
+- **Flood-relay backoff + per-packet airtime** — `send_pkt`'s fixed 300–800 ms
+  "CSMA" delay (`delay(300 + millis()%500)`) is gone: it was deterministic (no
+  RTC, so `millis()` ticks in lockstep across nodes → identical backoffs), hit
+  *every* TX, and ignored packet size. On-air time is now computed per-packet
+  from `radio.getTimeOnAir(len)` (live SF/BW/CR) — feeding the retransmit
+  delay, the token-bucket duty gate, and per-packet RX air-time stats. The
+  retransmit delay is applied **only to flood relays** (collision avoidance):
+  a per-chip random 0..~2× airtime (LCG seeded from the 96-bit STM32 UID).
+  Originals (adverts/admin replies) and direct retransmits / PING responses are
+  undelayed (the official's `getDirectRetransmitDelay = 0`).
 
 ### Notes (follow-ups)
 - The periodic **ADVERT** TX has the same not-marked-as-seen gap; it's less

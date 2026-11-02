@@ -73,6 +73,8 @@ void neighbor_add(const uint8_t* pubkey32, uint32_t ts, int8_t snr_x4);
 void console_log(const char* line);
 void console_clear(void);
 int  console_recent(char* out_lines, int max_lines, int line_len); // returns count
+void set_rx_ring_log(bool on);   // `log start`/`log stop`: gate per-packet RX lines into the ring
+bool rx_ring_log_enabled(void);
 
 // ─── hooks implemented in main.cpp, used by CLI handlers ───────────────────
 void cli_reboot(void);

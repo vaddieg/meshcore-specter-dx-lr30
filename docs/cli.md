@@ -234,7 +234,9 @@ OK
 | `discover.neighbors` | `OK` | discovery burst |
 | `stats-core` | uptime/name/duty/budget/loop | `budget=` = remaining duty-cycle budget (ms) |
 | `stats-packets` | rx/relay/drop/advert counters | |
-| `log` | last 20 diagnostic lines | console is silent by default; this is how you read RX/relay/drop/ADVERT/ALIVE lines |
+| `log` | last 20 ring lines | read ADVERT/ALIVE/login/error lines (RX is opt-in via `log start`) |
+| `log start` | `logging on` | begin capturing per-packet RX RSSI/SNR/len into the ring (off by default, so a busy mesh doesn't flood it) |
+| `log stop` | `logging off` | stop capturing RX into the ring |
 | `log clear` | `OK` | empty the diagnostic buffer |
 | `get repeat` / `set repeat on\|off` | `on` / `OK` | relay master switch |
 | `get loop.detect` / `set <lvl>` | `minimal` / `OK` | off\|minimal\|moderate\|strict |

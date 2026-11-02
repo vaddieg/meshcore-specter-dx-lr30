@@ -85,6 +85,14 @@ static uint32_t stat_direct_dups = 0;
 static uint32_t stat_flood_dups  = 0;
 static uint32_t stat_recv_errors = 0;   // CRC / read errors
 
+// Noise floor (instantaneous RSSI while idle in RX): average of 10 quiet samples
+// (below current floor + 14 dB, matching the official's SAMPLING_THRESHOLD),
+// clamped to -120 dBi. Sampled every 100 ms in loop().
+static int16_t  stat_noise_floor = 0;
+static uint8_t  nf_samples = 0;
+static int32_t  nf_sum     = 0;
+static uint32_t last_nf_ms = 0;
+
 // Basic packet statistics (declared here so handle_req / the stats response can
 // use them; the RX/TX paths below increment them)
 uint32_t stat_rx     = 0;   // valid packets received from radio
@@ -562,6 +570,18 @@ static void dlog(const char* fmt, ...) {
     va_end(ap);
     Serial1.println(buf);
 }
+// Per-packet RX line: always to the USB console (live debug), but into the
+// remote ring only when logging is on (`log start`). Off by default so a busy
+// mesh doesn't flood the ring — matches the official's _logging gate (logRx).
+static void rxlog(const char* fmt, ...) {
+    char buf[72];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    Serial1.println(buf);
+    if (rx_ring_log_enabled()) console_log(buf);
+}
 
 static uint8_t relay_buf[MAX_PKT];
 static int     relay_len = 0;
@@ -700,7 +720,7 @@ static bool handle_req(const uint8_t* pl, int plen) {
         RepeaterStats s;
         s.batt_milli_volts       = 0;                 // no battery
         s.curr_tx_queue_len      = 0;                 // no TX queue
-        s.noise_floor            = 0;                 // not tracked
+        s.noise_floor            = stat_noise_floor;
         s.last_rssi              = stat_last_rssi;
         s.n_packets_recv         = stat_rx;
         s.n_packets_sent         = stat_sent_flood + stat_sent_direct;
@@ -1268,7 +1288,7 @@ void loop(void) {
             int   rxlen = (int)radio.getPacketLength();
             float rssi  = radio.getRSSI();
             int   snr   = (int)radio.getSNR();
-            slog("RX RSSI=%d SNR=%d len=%d", (int)rssi, (int)snr, (int)rxlen);
+            rxlog("RX RSSI=%d SNR=%d len=%d", (int)rssi, (int)snr, (int)rxlen);
             stat_last_rssi   = (int16_t)rssi;          // last RX signal level
             stat_last_snr_x4 = (int16_t)(snr * 4);     // last SNR, x4
             stat_rx_air_ms  += (uint32_t)(radio.getTimeOnAir(rxlen) / 1000);   // per-packet RX air time
@@ -1299,5 +1319,25 @@ void loop(void) {
     //     and IWatchdog.reload() still work (loop re-runs each tick)
     //   - DIO1 (PC15) interrupt wakes on incoming packet → sets rx_flag
     // This reduces CPU power vs. spinning the loop continuously.
+
+    // Noise floor: sample the instantaneous RSSI (GET_RSSI_INST) every 100 ms
+    // while idle in RX. Average of 10 quiet samples (below current floor + 14 dB,
+    // matching the official's SAMPLING_THRESHOLD); clamped to -120 dBi. The
+    // official averages 64 continuous samples; 10 @ 100 ms is precise enough here.
+    if (rx_started && (now - last_nf_ms) >= 100) {
+        last_nf_ms = now;
+        int rssi = (int)radio.getRSSI(false);
+        if (stat_noise_floor == 0 || rssi < stat_noise_floor + 14) {
+            nf_sum += rssi;
+            if (nf_samples < 10) nf_samples++;
+            if (nf_samples >= 10) {
+                stat_noise_floor = (int16_t)(nf_sum / nf_samples);
+                if (stat_noise_floor < -120) stat_noise_floor = -120;
+                nf_samples = 0;
+                nf_sum = 0;
+            }
+        }
+    }
+
     __WFI();
 }

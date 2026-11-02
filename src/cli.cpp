@@ -38,6 +38,13 @@ void console_clear(void) {
     log_count = 0;
 }
 
+// Per-packet RX lines go into the ring only when this is on (`log start`/`stop`).
+// Matches the official's _logging gate (logRx) — off by default so a busy mesh
+// doesn't flood the ring.
+static bool rx_ring_log_on = false;
+void set_rx_ring_log(bool on) { rx_ring_log_on = on; }
+bool rx_ring_log_enabled(void) { return rx_ring_log_on; }
+
 // Copy up to max_lines most-recent lines into out_lines (line_len each)
 int console_recent(char* out_lines, int max_lines, int line_len) {
     int n = log_count < max_lines ? (int)log_count : max_lines;
@@ -655,7 +662,15 @@ static void handle_line(char* raw) {
     else if (!strcmp(c, "clock"))                           { FINISH(cmd_clock()); }
     else if (!strcmp(c, "neighbors"))                       { FINISH(cmd_neighbors()); }
     else if (!strcmp(c, "log")) {
-        if (argc >= 2 && (!strcmp(argv[1], "clear") || !strcmp(argv[1], "erase"))) {
+        if (argc >= 2 && !strcmp(argv[1], "start")) {
+            set_rx_ring_log(true);
+            out("logging on");
+            done = true;
+        } else if (argc >= 2 && !strcmp(argv[1], "stop")) {
+            set_rx_ring_log(false);
+            out("logging off");
+            done = true;
+        } else if (argc >= 2 && (!strcmp(argv[1], "clear") || !strcmp(argv[1], "erase"))) {
             console_clear();
             out("OK");
             done = true;
