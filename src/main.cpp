@@ -401,8 +401,33 @@ static int build_advert(uint8_t* buf) {
     return i;
 }
 
-// Direct packets are routed without a delay. See getDirectRetransmitDelay(pkt)
-static bool no_delay = false;
+// ─── Flood-relay retransmit delay (collision avoidance) ─────────────────────
+// The official spreads out retransmissions of the same FLOOD packet by
+// different repeaters with a random delay scaled to the packet airtime
+// (_rng->nextInt(0,5) * airtime*52/50/2). SPECTER has no hardware RNG (STM32F103
+// "basic" line) and no RTC (millis() is uptime, identical across nodes at the
+// same uptime), so seed an LCG from the unique 96-bit STM32 UID — each chip gets
+// a different sequence, so simultaneous retransmissions diverge.
+// relay_is_flood: set by process_pkt for flood relays (need the backoff);
+// false for direct relays / PING responses / original packets (no backoff).
+static uint32_t rng_state    = 1;
+static bool     relay_is_flood = false;
+static void rng_seed_uid(void) {
+    const uint32_t uid[3] = {
+        *(volatile uint32_t*)0x1FFFF7E8U,
+        *(volatile uint32_t*)0x1FFFF7ECU,
+        *(volatile uint32_t*)0x1FFFF7F0U,
+    };
+    rng_state = (uid[0] * 2654435761u) ^ (uid[1] * 2246822519u) ^ (uid[2] * 3266489917u);
+    if (rng_state == 0) rng_state = 1;
+}
+static uint32_t rng_next(void) {
+    rng_state = rng_state * 1664525u + 1013904223u;   // Numerical Recipes LCG
+    return rng_state;
+}
+static uint32_t rng_range(uint32_t max) {   // [0, max)
+    return max ? (rng_next() % max) : 0;
+}
 
 // ─── Token-bucket duty-cycle helpers ────────────────────────────────────────
 // Refill the budget for the elapsed time since the last update.
@@ -446,7 +471,7 @@ static void slog(const char* fmt, ...);   // fwd: important → log ring + USB
 static void dlog(const char* fmt, ...);   // fwd: verbose → USB only
 
 // ─── Send a packet (with RF switch + token-bucket duty-cycle gating) ─────────
-static bool send_pkt(const uint8_t* buf, int len) {
+static bool send_pkt(const uint8_t* buf, int len, bool flood_relay) {
     rf_idle();
 
     // TX log (RX/TX correlation): ptype, first 2 payload bytes (dest/src for
@@ -466,18 +491,29 @@ static bool send_pkt(const uint8_t* buf, int len) {
         }
     }
 
-    if (no_delay) {
-        delay(10);
-        no_delay = false;
-    }
-    else {
-        // Random CSMA backoff 300–800 ms to respect Ch utilization limits
-        delay(300 + (millis() % 500));
+    // Estimate this packet's on-air time from its LENGTH (RadioLib's
+    // calculateTimeOnAir uses the live SF/BW/CR/preamble) — matching the
+    // official's getEstAirtimeFor(len). Fall back to the radio_init estimate if
+    // the radio isn't ready yet.
+    uint32_t est_airtime_ms = (uint32_t)(radio.getTimeOnAir(len) / 1000);
+    if (est_airtime_ms == 0) est_airtime_ms = radio_airtime_ms;
+
+    // Retransmit delay: only for FLOOD relays (collision avoidance — spread out
+    // simultaneous retransmissions of the same packet by different repeaters).
+    // Original packets (adverts, admin replies) and DIRECT retransmissions /
+    // PING responses are not delayed (matches the official: getRetransmitDelay
+    // for flood, getDirectRetransmitDelay = 0). Random 0..~2×airtime, per-chip.
+    if (flood_relay) {
+        uint32_t t       = (est_airtime_ms * 52u / 50u) / 2u;   // ≈ airtime/2
+        uint32_t backoff = rng_range(5) * t;                    // 0..4t ≈ 0..2×airtime
+        if (backoff > 0) delay(backoff);
+    } else {
+        delay(10);   // brief RF-switch settle
     }
 
     // Token bucket: ensure the budget covers this TX before transmitting
     updateTxBudget();
-    duty_wait(radio_airtime_ms);
+    duty_wait(est_airtime_ms);
 
     rf_tx();
     uint32_t tx0   = millis();
@@ -555,8 +591,7 @@ static void send_admin_reply(uint8_t ptype, const uint8_t* client_hash, const ui
     // → same fingerprint, so it's deduped here instead of re-relayed, which is
     // what was producing duplicate replies.
     dedup_seen(b + 2, ptype, (uint8_t)(n - 2));
-    no_delay = true;                // small delay, not the 300-800ms relay backoff
-    send_pkt(b, n);
+    send_pkt(b, n, false);          // original packet — no retransmit delay
 }
 
 // Login (ANON_REQ): payload = [dest_hash][sender_pub(32)][MAC+AES(ts(4)+password)]
@@ -777,6 +812,7 @@ static bool handle_txt_msg(const uint8_t* pl, int plen) {
 }
 
 static bool process_pkt(const uint8_t* data, int len) {
+    relay_is_flood = false;   // reset; set true only on the flood-relay return
     if (len < 3) { dlog("Drop: malformed"); return false; }
 
     uint8_t header = data[0];
@@ -860,8 +896,7 @@ static bool process_pkt(const uint8_t* data, int len) {
                 }
 
                 dlog("Relay direct");
-                no_delay = true;
-                return true;
+                return true;   // relay_is_flood stays false → no backoff
             }
         }
         if ((ptype == PAYLOAD_TYPE_TRACE) && (own_hash == data[len-1])) {  // PING packet
@@ -875,8 +910,7 @@ static bool process_pkt(const uint8_t* data, int len) {
             memcpy(relay_buf + relay_len, payload_ptr, payload_len);
             relay_len += payload_len;
             slog("Ping: %08lX", (unsigned long)ping_id);
-            no_delay = true;
-            return true;
+            return true;   // relay_is_flood stays false → no backoff
         }
         return false;   // Our hash not in path — not our route
     }
@@ -962,6 +996,7 @@ static bool process_pkt(const uint8_t* data, int len) {
     relay_len += payload_len;
 
     dlog("Relay hop=%u", (unsigned)new_hop);
+    relay_is_flood = true;   // flood relay → apply the retransmit backoff
     return true;
 }
 
@@ -991,6 +1026,7 @@ void setup(void) {
 
     ts_base = build_unix_ts();
     identity_init();
+    rng_seed_uid();   // per-chip retransmit-delay RNG (see send_pkt)
     Serial1.println();
     Serial1.print("=== SPECTER MeshCore Repeater v");
     Serial1.print(FW_VERSION);
@@ -1146,7 +1182,7 @@ void loop(void) {
         stat_advert++;
         slog("ADVERT %s", advert_zerohop ? "zerohop" : "flood");
         digitalWrite(PIN_LED, LED_ON);
-        send_pkt(abuf, alen);
+        send_pkt(abuf, alen, false);
         digitalWrite(PIN_LED, LED_OFF);
         last_local_advert = now;   // don't double-send right after
     }
@@ -1162,7 +1198,7 @@ void loop(void) {
         stat_advert++;
         slog("ADVERT discover %u", (unsigned)discovery_burst);
         digitalWrite(PIN_LED, LED_ON);
-        send_pkt(abuf, alen);
+        send_pkt(abuf, alen, false);
         digitalWrite(PIN_LED, LED_OFF);
     }
 
@@ -1204,7 +1240,7 @@ void loop(void) {
         stat_advert++;
         slog("ADVERT %s", advert_type);
         digitalWrite(PIN_LED, LED_ON);
-        send_pkt(abuf, alen);
+        send_pkt(abuf, alen, false);
         digitalWrite(PIN_LED, LED_OFF);
     }
 
@@ -1235,7 +1271,7 @@ void loop(void) {
             slog("RX RSSI=%d SNR=%d len=%d", (int)rssi, (int)snr, (int)rxlen);
             stat_last_rssi   = (int16_t)rssi;          // last RX signal level
             stat_last_snr_x4 = (int16_t)(snr * 4);     // last SNR, x4
-            stat_rx_air_ms  += radio_airtime_ms;       // rough per-packet RX air time
+            stat_rx_air_ms  += (uint32_t)(radio.getTimeOnAir(rxlen) / 1000);   // per-packet RX air time
             if (rxlen > 0 && rxlen < MAX_PKT) {
                 stat_rx++;
                 uint8_t route = rxbuf[0] & 0x03;
@@ -1246,7 +1282,7 @@ void loop(void) {
                 if (process_pkt(rxbuf, rxlen)) {
                     stat_relay++;
                     led_blink(2, 30);     // 2 fast blinks = relay OK
-                    send_pkt(relay_buf, relay_len);
+                    send_pkt(relay_buf, relay_len, relay_is_flood);
                 } else {
                     stat_drop++;
                 }
