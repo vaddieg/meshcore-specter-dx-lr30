@@ -75,6 +75,7 @@ Ultimate advice here: If blue LED blinks your board is **NOT IN BOOTLOADER MODE*
 ### Over USB, if you have soldering skills
 BOOT0, which needs to be pulled to 3.3v for bootloader mode is not connected on this board
 ![MCU](docs/img/chip_boot0.jpg)
+
 Solder a thin wire there, and connect it to 3V3, press RST, disconnect -> you're in bootloader
 
 Once your board in bootloader mode, either upload commands will work:
