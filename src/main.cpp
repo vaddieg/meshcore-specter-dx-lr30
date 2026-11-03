@@ -241,6 +241,7 @@ static void short_fp(const uint8_t* payload, uint8_t ptype, uint8_t plen, char* 
     snprintf(out, 9, "%02X%02X%02X%02X", full[0], full[1], full[2], full[3]);
 }
 
+#ifdef SP_DUMP_PAYLOAD
 // Hex dump a buffer (up to `max` bytes) to the LOCAL USB console only (not the
 // remote log ring), 16 bytes/line, to inspect a dropped / unexpected packet.
 static void hex_dump(const uint8_t* buf, int len, int max) {
@@ -254,6 +255,7 @@ static void hex_dump(const uint8_t* buf, int len, int max) {
         Serial1.println(hb);
     }
 }
+#endif
 
 // ─── RF switch helpers ───────────────────────────────────────────────────────
 static void rf_rx(void)   { digitalWrite(PIN_TXEN, LOW);  digitalWrite(PIN_RXEN, HIGH); }
@@ -744,7 +746,9 @@ static bool handle_req(const uint8_t* pl, int plen) {
     }
     // Unknown request type: log + dump the request fields, no reply.
     slog("REQ unhandled type=0x%02X", req_type);
+#ifdef SP_DUMP_PAYLOAD    
     hex_dump(data + 4, len - 4, 24);
+#endif    
     return true;
 }
 
@@ -965,7 +969,9 @@ static bool process_pkt(const uint8_t* data, int len) {
     if ((ptype == PAYLOAD_TYPE_TXT_MSG || ptype == PAYLOAD_TYPE_ANON_REQ || ptype == PAYLOAD_TYPE_RESPONSE)
         && payload_len >= 2 && payload_ptr[1] == own_hash) {
         dlog("Drop self-pickup");
+#ifdef SP_DUMP_PAYLOAD        
         hex_dump(payload_ptr, payload_len, 24);
+#endif        
         return false;
     }
 
@@ -973,7 +979,9 @@ static bool process_pkt(const uint8_t* data, int len) {
     if (dedup_seen(payload_ptr, ptype, (uint8_t)payload_len)) {
         stat_flood_dups++;
         dlog("Drop dedup");
+#ifdef SP_DUMP_PAYLOAD        
         hex_dump(payload_ptr, payload_len, 24);
+#endif        
         return false;
     }
 
@@ -983,7 +991,9 @@ static bool process_pkt(const uint8_t* data, int len) {
         for (int j = 0; j < hop_count; j++) {
             if (path_ptr[j * hash_size] == own_hash) {
                 dlog("Drop loop");
+#ifdef SP_DUMP_PAYLOAD                
                 hex_dump(payload_ptr, payload_len, 24);
+#endif                
                 return false;
             }
         }
@@ -1320,11 +1330,11 @@ void loop(void) {
     //   - DIO1 (PC15) interrupt wakes on incoming packet → sets rx_flag
     // This reduces CPU power vs. spinning the loop continuously.
 
-    // Noise floor: sample the instantaneous RSSI (GET_RSSI_INST) every 100 ms
+    // Noise floor: sample the instantaneous RSSI (GET_RSSI_INST) every 200 ms
     // while idle in RX. Average of 10 quiet samples (below current floor + 14 dB,
     // matching the official's SAMPLING_THRESHOLD); clamped to -120 dBi. The
     // official averages 64 continuous samples; 10 @ 100 ms is precise enough here.
-    if (rx_started && (now - last_nf_ms) >= 100) {
+    if (rx_started && (now - last_nf_ms) >= 200) {
         last_nf_ms = now;
         int rssi = (int)radio.getRSSI(false);
         if (stat_noise_floor == 0 || rssi < stat_noise_floor + 14) {
