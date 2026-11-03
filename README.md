@@ -1,10 +1,8 @@
-# SPECTER Native MeshCore Repeater for DX-LR30
+# SPECTER MeshCore Repeater for DX-LR30
 
-> The DX-LR30 is a cheap Chinese LoRa shell device. MeshCore has no official
-> firmware for STM32F103 + SX1262.
-> Specter is a very energy efficient LoRa Meshcore repeater, consuming 0.5-150 mA (RX average is 30 mA).
+> The DX-LR30 is a cheap Chinese LoRa shell device.
+> Specter is an energy efficient LoRa Meshcore repeater, consuming 0.5-150 mA (RX average is 30 mA).
 > It can be configured over USB using https://config.meshcore.io/ or using the Remote Management
-> The Meshcore CLI protocol over TTY is also supported
 
 ---
 
