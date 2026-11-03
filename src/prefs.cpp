@@ -56,6 +56,11 @@ AdminConfig adm;
 
 static void admin_defaults(void) {
     memset(&adm, 0, sizeof(adm));   // empty passwords = mesh admin disabled
+    // Compile-time default admin password (build flag -D ADMIN_PASSWORD="...").
+    // Seeded like NODE_LAT_I/NODE_LON_I; a CLI "set admin.password" (or clearing it)
+    // overrides this in flash, including disabling admin entirely.
+    strncpy(adm.admin_password, ADMIN_PASSWORD, sizeof(adm.admin_password) - 1);
+    adm.admin_password[sizeof(adm.admin_password) - 1] = '\0';
     adm.admin_timeout = DEF_ADMIN_TIMEOUT;
 }
 

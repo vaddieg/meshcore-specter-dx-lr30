@@ -29,6 +29,10 @@ mesh. USB remains the primary channel; this is field access.
 - **CLI**: `set/get admin.password`, `set/get guest.password`,
   `set/get admin.timeout`, `acl` (list active sessions), and the official
   `password <pwd>` shortcut (sets the admin password and echoes it back).
+- **`ADMIN_PASSWORD` build flag**: bakes a default admin password into the
+  firmware (like `NODE_LAT_I`/`NODE_LON_I`). Seeded at first boot; a CLI
+  `set admin.password` (or clearing it) overrides it in flash, so admin can
+  still be fully disabled over the mesh.
 - **`get stats` (REQ 0x01) → Repeater Status**: the app's *Repeater Status*
   button now works. SPECTER answers the `REQ_TYPE_GET_STATUS` request with a
   byte-exact `RepeaterStats` (56 B, little-endian — matching the official

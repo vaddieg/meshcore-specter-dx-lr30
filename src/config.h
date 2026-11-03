@@ -56,6 +56,14 @@ struct AdminConfig {
 };
 extern AdminConfig adm;
 
+// Compile-time default admin password, set via build flag:
+//   -D ADMIN_PASSWORD="s3cret"
+// Seeded into adm.admin_password at first boot (like NODE_LAT_I/NODE_LON_I); a
+// CLI "set admin.password <pw>" — including clearing it — overrides it in flash.
+#ifndef ADMIN_PASSWORD
+#define ADMIN_PASSWORD ""
+#endif
+
 // ─── prefs.cpp ──────────────────────────────────────────────────────────────
 void prefs_load(void);    // apply build-flag defaults, then overlay flash
 void prefs_save(void);    // persist cfg to flash page

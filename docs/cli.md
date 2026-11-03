@@ -282,8 +282,8 @@ ALIVE uptime=40s ts=1793052700 rx=2 relay=1 drop=1
 
 All `set` commands persist immediately to the last flash page
 (`0x0801F000`, magic + CRC16, see `src/prefs.cpp`). Build flags
-(`NODE_NAME_STR`, `NODE_LAT_I`, `NODE_LON_I`) are defaults only — stored
-settings win. `erase` returns the node to build-flag defaults.
+(`NODE_NAME_STR`, `NODE_LAT_I`, `NODE_LON_I`, `ADMIN_PASSWORD`) are defaults
+only — stored settings win. `erase` returns the node to build-flag defaults.
 
 ### 3.5 Flashing without buttons (optional)
 
@@ -326,6 +326,12 @@ read-only guest access (so the app's Repeater Status works with zero setup);
 with **no admin password set**, admin mesh access is off. Passwords are stored
 in a separate, versioned flash record (the node-config record is untouched,
 so an `erase` of the old layout still works).
+
+A default admin password can also be **baked into the firmware** with the
+`ADMIN_PASSWORD` build flag (`-D ADMIN_PASSWORD="s3cret"` in `platformio.ini`),
+like `NODE_LAT_I`/`NODE_LON_I`. It's seeded at first boot; `set admin.password`
+(or clearing it) overrides it in flash, so admin can still be fully disabled
+over the mesh. Keep it ≤ 23 chars (longer is clipped to fit the field).
 
 **How it works** (byte-for-byte the MeshCore protocol):
 - A companion sends an **ANON_REQ** (flood) with an ephemeral Ed25519 key and
