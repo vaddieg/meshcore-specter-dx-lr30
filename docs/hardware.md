@@ -4,8 +4,8 @@
 
 The **DX-LR30** is a compact LoRa module combining an STM32F103C8T6
 microcontroller with an SX1262 transceiver and a CH340E 10-pin USB-serial bridge.
-It was originally sold as an AT-command LoRa modem. **SPECTER** repurposes it
-as a fully autonomous MeshCore repeater node.
+It's being produced by Shenzhen DX-SMART Technology.
+The official board docs: https://github.com/DX-SMART/LORAMODULE/
 
 ```mermaid
 flowchart LR
@@ -13,8 +13,8 @@ flowchart LR
     classDef conn fill:#2d2000,stroke:#f0ad4e,color:#fff8e1
 
     USB(["USB-C\nConnector"]):::conn
-    CH(["CH340G\nUSB–Serial"]):::chip
-    MCU(["STM32F103C8T6\n72 MHz · 64KB Flash · 20KB RAM\n\nBOOT0 · RESET buttons\nLED on PC13"]):::chip
+    CH(["CH340E\nUSB–Serial"]):::chip
+    MCU(["STM32F103C8T6\n72 MHz · 128KB Flash · 20KB RAM\n\nKEY · RESET buttons\nLED on PC13"]):::chip
     SX(["SX1262\nSub-GHz LoRa\n+22 dBm max"]):::chip
     ANT(["SMA\nAntenna"]):::conn
 
@@ -24,34 +24,39 @@ flowchart LR
     SX --> ANT
 ```
 ---
-Physical board inspection revealed STM32F103xx LQFP48 chip with disconnected BOOT0 pin, 
-and the KEY button connected to PB12 which has no effect on entering the bootloader mode.
+
+Physical board inspection revealed a serious mismatch with the provided schematic diagram: BOOT0 is not
+connected to RTS of CH340E, DTR isn't connected too, which makes software DFU over USB impossible.
+Additional findings:
+- VBAT disconnected, it's an official path for battery metrics
+- STM32F103xx chip has LQFP48 packaging (48 pins) 
+- The KEY button connected to PB12 which has no effect on entering the bootloader mode.
 
 
 ## Pin Assignments
 
 ### SPI1, SX1262 Interface
 
-| STM32 Pin | GPIO | SX1262 Pin | Direction | Description |
-|-----------|------|-----------|-----------|-------------|
-| 20 | PA4 | NSS | → | Chip Select (active LOW) |
-| 21 | PA5 | SCK | → | SPI Clock |
-| 22 | PA6 | MISO | ← | Master In Slave Out |
-| 23 | PA7 | MOSI | → | Master Out Slave In |
-| 15 | PA2 | BUSY | ← | Radio busy flag |
-| 16 | PA3 | NRST | → | Radio hard reset |
-| 10 | PA0 | TXEN | → | RF switch, TX mode |
-| 11 | PA1 | RXEN | → | RF switch, RX mode |
-| 38 | PA15 | DIO1 | ← | RxDone flag |
+| GPIO | SX1262 Pin | Direction | Description |
+|------|-----------|-----------|-------------|
+| PA4  | NSS | → | Chip Select (active LOW) |
+| PA5  | SCK | → | SPI Clock |
+| PA6  | MISO | ← | Master In Slave Out |
+| PA7  | MOSI | → | Master Out Slave In |
+| PA2  | BUSY | ← | Radio busy flag |
+| PA3  | NRST | → | Radio hard reset |
+| PA0  | TXEN | → | RF switch, TX mode |
+| PA1  | RXEN | → | RF switch, RX mode |
+| PA15 | DIO1 | ← | RxDone flag |
 
 
 
 ### USART1, Serial Console (CH340)
 
-| STM32 Pin | GPIO | CH340 Pin | Description |
-|-----------|------|-----------|-------------|
-| 29 | PA9 | RXD | Serial TX (115200 8N1) |
-| 30 | PA10 | TXD | Serial RX |
+| GPIO | CH340 Pin | Description |
+|------|-----------|-------------|
+| PA9 | RXD | Serial TX (115200 8N1) |
+| PA10 | TXD | Serial RX |
 
 > The `ENABLE_HWSERIAL1` build flag is **required** to map `Serial` to USART1.
 > Without it, Arduino STM32 defaults `Serial` to USART2 and nothing appears
@@ -59,44 +64,10 @@ and the KEY button connected to PB12 which has no effect on entering the bootloa
 
 ### Other
 
-| GPIO | Function | Notes |
-|------|----------|-------|
-| PB11 | Onboard LED | Active HIGH. 1 blink = RX · 2 fast blinks = relay TX · solid ON = ADVERT TX · 5 Hz = HALT (IWDG resets in ≤ 8 s) |
+| GPIO | Function |
+|------|----------|
+| PB11 | blue LED |
 
----
-
-## Bootloader Access
-
-Bootloader entry over USB (DTR/RTS) is **not possible** on this board —
-the CH340C's DTR#/RTS# outputs are unconnected and the auto-DFU transistor
-circuit from some DX-LR30 schematics is absent (no transistors, no pads).
-Tested to exhaustion, see
-[flashing.md](flashing.md#programmatic-bootloader-entry-over-usb-not-possible).
-Use the physical buttons (or SWD, see below):
-
-```mermaid
-sequenceDiagram
-    participant You
-    participant BOOT0 as BOOT0 Button
-    participant RST as RESET Button
-    participant STM as STM32
-
-    Note over STM: Running SPECTER firmware
-    You->>BOOT0: Press and hold
-    Note over BOOT0: BOOT0 pin = HIGH
-    You->>RST: Press
-    You->>RST: Release
-    Note over STM: Detects BOOT0=HIGH on reset edge
-    STM->>STM: Starts UART bootloader
-    You->>BOOT0: Release
-    Note over STM: Listening on USART1<br/>57600 8E1 · waiting for 0x7F
-```
-
-> **Note:** PB12 (the "KEY" button) is a plain user IO and is **not**
-> connected to BOOT0 — driving it from firmware cannot select the
-> bootloader. Pressing KEY has occasionally been observed to drop the board
-> into the bootloader (likely noise coupling into the BOOT0 net); unreliable,
-> do not depend on it.
 
 ### SWD Debug Header (headless flashing)
 
@@ -123,7 +94,7 @@ see [flashing.md, Headless flashing: SWD](flashing.md#headless-flashing-swd-reco
 | Chip ID | `0x0410` (STM32F10xxx Medium-density) |
 | Bootloader version | `0x22` |
 | Flash base | `0x08000000` |
-| Max flash | 128KB (chip supports, board has 64KB) |
+| Max flash | 128KB  |
 
 ---
 
@@ -141,20 +112,3 @@ The board can be powered from a Li-ion battery, TODO: identify safe pins
 ## Unique Device ID
 
 The STM32F103 has a factory-programmed 96-bit unique ID at `0x1FFFF7E8`.
-SPECTER uses this to derive a stable node identity without external storage.
-The node name (`SPECTER-XXXX`) and 1-byte path hash are generated at boot
-from this ID:
-
-```c
-const uint32_t uid[3] = {
-    *(volatile uint32_t*)0x1FFFF7E8U,  // lot/wafer number
-    *(volatile uint32_t*)0x1FFFF7ECU,  // X/Y coords on wafer
-    *(volatile uint32_t*)0x1FFFF7F0U,  // lot number
-};
-// → auto-generates name: "SPECTER-XXXX" (last 16 bits of uid[2])
-// → mixed into 32-byte pseudo-pubkey
-// → first byte of pubkey = path hash (unique per device)
-```
-
-This ensures each DX-LR30 unit gets a **different name and hash**
-automatically, even without any configuration.
