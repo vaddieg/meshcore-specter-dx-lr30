@@ -38,7 +38,7 @@ Hardware constraints that shape the subset:
 | 13 | `get freq` / `set freq <MHz>` | get/set | Shortcut for single-frequency change. Default **869.618** (EU868). Reboot to apply |
 | 14 | `advert` | op | Trigger a flood ADVERT now (already have `build_advert()`) |
 | 15 | `advert.zerohop` | op | Trigger a zero-hop ADVERT now |
-| 16 | `neighbors` | get | List up to 8 most recent adverts: `{pubkey-prefix}:{timestamp}:{snr*4}` (needs a small neighbor cache — new, ~8×40 B) |
+| 16 | `neighbors` | get | List up to 8 most recent adverts: `{pubkey-prefix}:{timestamp}:{snr*4}` (backed by an 8-slot in-memory cache filled from ADVERTs) |
 | 17 | `discover.neighbors` | op | Trigger zero-hop discovery burst |
 | 18 | `stats-core` | get (serial) | Uptime, advert counters, relay/drop counters (already tracked) |
 | 19 | `stats-packets` | get (serial) | rx / relay / drop counters (already tracked) |
