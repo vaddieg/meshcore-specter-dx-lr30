@@ -5,8 +5,6 @@ Goal: implement a subset of the standard MeshCore CLI (see `CLI.pdf` /
 
 Hardware constraints that shape the subset:
 - STM32F103CB + SX1262 (DX-LR30), ~20 KB RAM, 128 KB flash
-- **No user buttons** — USB serial (CH340, 115200 baud) is the *only*
-  admin channel
 - No GPS, no sensors, no bridge, no Ethernet, no battery, no FEM
 - **Mesh admin over LoRa** — the device can be administered remotely by an
   official MeshCore companion radio (ANON_REQ login + CLI, X25519/AES-ECB
@@ -86,15 +84,14 @@ Hardware constraints that shape the subset:
 | Zero-hop advert interval | 60 min | MeshCore minimum (60); 0 disables |
 | Duty cycle | 10 % | EU 868 MHz aggregate limit (1 % per channel) |
 | Name | `SPECTER-XXXX` / build flag | Auto from STM32 UID |
-| Lat / Lon | build flags (48.961945, 9.129164) | `NODE_LAT_I` / `NODE_LON_I` |
+| Lat / Lon | build flags (48.941942, 9.129614) | `NODE_LAT_I` / `NODE_LON_I` |
 | Loop detect | minimal | Safe default for dense EU meshes |
 | Flood max hops | 64 | MeshCore default |
 
 ## 3. Using the CLI (operating guide)
 
 The CLI is a line-based command interface on **USART1 → CH340 USB-serial**,
-**115200 8N1**. There are no buttons on the device — USB is the only admin
-channel. Commands are case-sensitive lowercase, sent with a trailing newline
+**115200 8N1**. Commands are case-sensitive lowercase, sent with a trailing newline
 (Enter). Replies: bare value, `OK`, `OK, reboot to apply`, or `Err: ...`.
 
 ### 3.0 Which client to use (repeater vs. companion)
@@ -146,8 +143,7 @@ does not implement; see Progress log 2026-07-15 (4).)
 
 ### 3.1 Finding the device
 
-**macOS** (CH340 driver must be installed, e.g. `brew install ch341`
-if the port never appears):
+**macOS** 
 
 ```bash
 ls /dev/cu.usbserial-*        # e.g. /dev/cu.usbserial-10
@@ -285,28 +281,6 @@ All `set` commands persist immediately to the last flash page
 (`NODE_NAME_STR`, `NODE_LAT_I`, `NODE_LON_I`, `ADMIN_PASSWORD`) are defaults
 only — stored settings win. `erase` returns the node to build-flag defaults.
 
-### 3.5 Flashing without buttons (optional)
-
-The STM32F103 has no USB DFU. The ROM serial bootloader (57600 8E1 on the
-same port) can be entered from the CLI **if** the board's BOOT0 and RESET
-lines are reachable as GPIOs:
-
-```ini
-; platformio.ini build_flags
-    -D DFU_BOOT0_PIN=PBxx
-    -D DFU_RST_PIN=PBxx
-```
-
-then:
-
-```bash
-# in the CLI:  dfu            → board drops into ROM bootloader
-stm32flash -w .pio/build/specter/firmware.bin -v -R -b 57600 /dev/cu.usbserial-10
-```
-
-Without the pins defined, use the physical BOOT0+RESET button sequence
-(see [flashing.md](flashing.md)).
-
 ### 3.6 Mesh administration (remote over LoRa)
 
 SPECTER can be administered **remotely** by an official MeshCore **companion
@@ -410,15 +384,6 @@ press *Repeater Status* / *Get Position* in the app. See
   - `set name`/`set radio` scanned the line buffer *after* the tokenizer
     null-terminated it in place → "Err: parse". Fixed with a pristine
     `line_raw` copy.
-  Flashing workflow proven: buttons into bootloader once, then
-  `stm32flash -w .pio/build/specter/firmware.bin -v -R -b 57600 /dev/cu.usbserial-10`
-  (bootloader probe: bare `stm32flash -b 57600 <port>`; `-v` is invalid
-  without `-w`).
-  Added `dfu` CLI command (programmatic bootloader entry: BOOT0 high +
-  NRST pulse), compiled in via `-D DFU_BOOT0_PIN=.. -D DFU_RST_PIN=..` —
-  awaiting confirmation of which GPIOs the DX-LR30 routes BOOT0/RESET to.
-  Test left lat/lon at Berlin (52.520007, 13.404954); no prior stored
-  values existed to restore.
 - **2026-07-15 (2)** — CLI implemented and building (v1.2.0, `specter`
   env: flash 57.5%, RAM 23.7%). New files: `src/config.h`,
   `src/prefs.cpp`, `src/cli.cpp`; `src/main.cpp` rewritten to runtime
@@ -437,9 +402,6 @@ press *Repeater Status* / *Get Position* in the app. See
   (RadioLib 7.x SX1262 has no runtime `setTxPower`/reconfig API in this
   build). Zero-hop advert is sent as a plain flood advert (protocol has
   no documented zero-hop marker) + discovery burst.
-  **Next:** flash to hardware, test CLI over USB (`monitor-log.py` /
-  miniterm @115200), verify `set radio` interop with stock MeshCore,
-  check flash-write stalls don't trip IWDG in practice.
 
 ### Open questions
 - ~~CR mapping~~ — resolved: user confirmed RadioLib CR 8 works on this
@@ -455,6 +417,3 @@ press *Repeater Status* / *Get Position* in the app. See
 - Zero-hop advert: no protocol-documented marker found; implemented as
   plain advert + 5× 1 s discovery burst. Verify against stock
   MeshCore behavior if `discover.neighbors` interop matters.
-- `specter_repeater` env fails to build (pre-existing RadioLib 7.6.0
-  ArduinoHal vs. arduino-ststm32 enum mismatch, unrelated to this work).
-  `flash.sh` references it — point it at `specter` or fix the env.
