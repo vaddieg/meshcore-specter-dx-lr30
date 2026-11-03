@@ -42,6 +42,7 @@ and the KEY button connected to PB12 which has no effect on entering the bootloa
 | 16 | PA3 | NRST | → | Radio hard reset |
 | 10 | PA0 | TXEN | → | RF switch, TX mode |
 | 11 | PA1 | RXEN | → | RF switch, RX mode |
+| 38 | PA15 | DIO1 | ← | RxDone flag |
 
 
 
