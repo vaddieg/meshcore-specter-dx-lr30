@@ -71,7 +71,7 @@ For the vanila DX-LR30 the following will most likely work:
 
 If your board already runs older version of Specter and you want to upload a newer one:
 Try pressing RST, KEY (like for vanila), touching MCU pins, unplug/plug USB until you enter bootloader mode (blue LED isn't flashing).
-It might take several minutes, but eventually you'll be there.
+It might take several minutes and a hundred of attempts, but eventually you'll be there.
 
 ### Over USB, if you have soldering skills
 BOOT0, which needs to be pulled to 3.3v for bootloader mode is not connected on this board

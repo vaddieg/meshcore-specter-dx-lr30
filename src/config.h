@@ -86,7 +86,6 @@ bool rx_ring_log_enabled(void);
 
 // ─── hooks implemented in main.cpp, used by CLI handlers ───────────────────
 void cli_reboot(void);
-#ifdef DFU_BOOT0_PIN
 void cli_send_advert_now(bool zero_hop);
 void cli_set_time(uint32_t epoch);
 uint32_t cli_now_epoch(void);
