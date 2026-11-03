@@ -111,6 +111,9 @@ Currently, frequency/region configs are not exposed as build flags.
 They're defined in `config.h` using the "EU/Narrow preset", you can change the configuration there.
 
 
+### Use the official Meshcore app
+Using your companion node paired with Meshcore app you can use the "Remote Management".
+Most of the features are supported, as well as Guest access.
 
 ### CLI quick tour
 You can use CLI in https://config.meshcore.io or use the serial monitor:
