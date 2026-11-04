@@ -26,6 +26,11 @@ sequenceDiagram
 
 ## Packet Format
 
+> The full upstream **MeshCore v1 spec** (all payload types, path-length
+> hash-size/hop-count encoding, transport codes, versioning) is in
+> [packet-format.md](packet-format.md). This section covers only what SPECTER
+> implements.
+
 ### Header Byte (Byte 0)
 
 ```

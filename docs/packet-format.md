@@ -1,5 +1,9 @@
 Packet Format
 
+> Upstream MeshCore v1 reference spec. For how **SPECTER specifically**
+> implements a subset of this (FLOOD-only relay, ADVERT, the 1-byte-hash path,
+> dedup, timing), see [protocol.md](protocol.md#packet-format).
+
 This document describes the MeshCore packet format.
 
 0xYY indicates YY in hex notation.
