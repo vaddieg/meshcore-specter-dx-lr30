@@ -351,6 +351,11 @@ press *Repeater Status* / *Get Position* in the app. See
 
 ### 3.7 RX duty cycle (power saving)
 
+> **POSTPONED / not reliable on DX-LR30.** Implemented but not merged to
+> `main`; even level 1 went deaf in field testing. Keep `radio.rxps 0`
+> (continuous RX, the default) for now. Full investigation in
+> [rx-duty-cycle.md](rx-duty-cycle.md).
+
 `set radio.rxps <0-10>` enables the **RX duty cycle**: the SX1262's native
 low-power RX mode, in which the radio hardware cycles between a short RX window
 and a longer standby window, instead of listening continuously. DIO1 still

@@ -74,6 +74,10 @@ mesh. USB remains the primary channel; this is field access.
   on-flash layout and CRC are unchanged and pre-existing devices keep their
   settings (defaulting to off). The MCU still idles with `__WFI()` between
   interrupts in all modes.
+  > **POSTPONED / not reliable on DX-LR30** — see [rx-duty-cycle.md](docs/rx-duty-cycle.md).
+  > Implemented on the `rx_duty` branch but not merged to `main`; even level 1
+  > degraded to deaf in field testing. Keep `radio.rxps 0` (continuous RX) until
+  > the open questions there are answered.
 - **RX preamble matched to the official firmware (32 for SF≤8, 16 for SF9–12)**:
   the native RX duty cycle only catches a packet whose *preamble* overlaps an
   RX window, so the LoRa preamble is now set to the official MeshCore value
