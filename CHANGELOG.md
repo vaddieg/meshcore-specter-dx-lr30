@@ -132,6 +132,13 @@ mesh. USB remains the primary channel; this is field access.
   a per-chip random 0..~2× airtime (LCG seeded from the 96-bit STM32 UID).
   Originals (adverts/admin replies) and direct retransmits / PING responses are
   undelayed (the official's `getDirectRetransmitDelay = 0`).
+- **`neighbors` now matches the official wire format** — the app's Neighbours
+  map was blank because SPECTER's reply used a non-standard layout (2-byte
+  pubkey prefix, absolute timestamp) and returned 0 bytes when empty. Now it
+  emits `<pubkey[4B-hex]>:<secs_ago>:<snr*4>` newest-first with `-none-` for an
+  empty cache, and the cache excludes our own ADVERT (matches the official's
+  `self_id.matches()` guard). Verified: the app now plots SPECTER and a
+  stock-firmware repeater on the map.
 
 ### Notes (follow-ups)
 - The periodic **ADVERT** TX has the same not-marked-as-seen gap; it's less

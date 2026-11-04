@@ -38,7 +38,7 @@ Hardware constraints that shape the subset:
 | 13 | `get freq` / `set freq <MHz>` | get/set | Shortcut for single-frequency change. Default **869.618** (EU868). Reboot to apply |
 | 14 | `advert` | op | Trigger a flood ADVERT now (already have `build_advert()`) |
 | 15 | `advert.zerohop` | op | Trigger a zero-hop ADVERT now |
-| 16 | `neighbors` | get | List up to 8 most recent adverts: `{pubkey-prefix}:{timestamp}:{snr*4}` (backed by an 8-slot in-memory cache filled from ADVERTs) |
+| 16 | `neighbors` | get | List up to 8 most recent neighbours: `{pubkey[4B-hex]}:{secs_ago}:{snr*4}` newest-first, `-none-` if empty (8-slot cache of other nodes' ADVERTs; own advert excluded) |
 | 17 | `discover.neighbors` | op | Trigger zero-hop discovery burst |
 | 18 | `stats-core` | get (serial) | Uptime, advert counters, relay/drop counters (already tracked) |
 | 19 | `stats-packets` | get (serial) | rx / relay / drop counters (already tracked) |
@@ -226,7 +226,7 @@ OK
 | `set advert.interval <m>` | `OK` | values < 60 clamp to 0 (disabled) |
 | `advert` | `OK` | send a flood ADVERT now |
 | `advert.zerohop` | `OK` | zero-hop ADVERT + 5×1 s discovery burst |
-| `neighbors` | `AABB:<ts>:<snr*4>` lines | 8 most recent adverts heard |
+| `neighbors` | `AABBCCDD:<secs_ago>:<snr*4>` lines (newest-first) | 8 most recent neighbours heard; `-none-` if empty |
 | `discover.neighbors` | `OK` | discovery burst |
 | `stats-core` | uptime/name/duty/budget/loop | `budget=` = remaining duty-cycle budget (ms) |
 | `stats-packets` | rx/relay/drop/advert counters | |
@@ -266,7 +266,7 @@ OK
 > set advert.interval 120
 OK
 > neighbors
-F7A9:1793148995:45
+F7A9B0C1:12:45
 > log
 RX RSSI=-87 SNR=7 len=110
 Relay hop=2
@@ -357,8 +357,9 @@ press *Repeater Status* / *Get Position* in the app. See
    Prompt/echo behavior kept minimal to not interfere with `monitor-log.py`.
 3. **Command handlers** — per table above; `set` handlers validate ranges,
    persist, and report `Reboot required` where noted.
-4. **Neighbor cache** — 8-entry ring of {pubkey, ts, snr} filled from
-   received ADVERT payloads; backs `neighbors` and `discover.neighbors`.
+4. **Neighbor cache** — 8-entry ring of {pubkey, heard_time, snr} filled from
+   received ADVERT payloads (own advert excluded); backs `neighbors` (official
+   format `pubkey[4B]:secs_ago:snr`, newest-first, `-none-` if empty) and `discover.neighbors`.
 5. **Timestamp re-sync** — `time <epoch>` adjusts `ts_base` so subsequent
    adverts carry correct Unix time.
 

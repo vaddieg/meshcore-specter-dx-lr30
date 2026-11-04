@@ -273,14 +273,33 @@ static void cmd_advert(int argc, char** argv) {
 }
 
 static void cmd_neighbors(void) {
-    for (int i = 0; i < NEIGH_MAX; i++) {
-        if (!nbrs[i].used) continue;
-        char buf[40];
-        snprintf(buf, sizeof(buf), "%02X%02X:%u:%d",
-                 nbrs[i].pubkey[0], nbrs[i].pubkey[1],
-                 (unsigned)nbrs[i].ts, (int)nbrs[i].snr_x4);
-        out(buf);
+    // Official format: "<pubkey[4B-hex]>:<secs_ago>:<snr>" newest-first,
+    // newline-joined, "-none-" when empty (see MyMesh::formatNeighborsReply).
+    static char  buf[200];
+    static bool  done[NEIGH_MAX];
+    memset(done, 0, sizeof(done));
+    int    pos   = 0;
+    bool   first = true;
+    uint32_t now_s = millis() / 1000UL;
+    for (int r = 0; r < NEIGH_MAX; r++) {
+        int best = -1;
+        for (int i = 0; i < NEIGH_MAX; i++) {
+            if (!nbrs[i].used || done[i]) continue;
+            if (best == -1 || nbrs[i].ts > nbrs[best].ts) best = i;
+        }
+        if (best == -1) break;
+        done[best] = true;
+        if (!first) buf[pos++] = '\n';
+        first = false;
+        uint32_t secs_ago = (now_s >= nbrs[best].ts) ? (now_s - nbrs[best].ts) : 0;
+        pos += snprintf(buf + pos, sizeof(buf) - pos, "%02X%02X%02X%02X:%lu:%d",
+                 nbrs[best].pubkey[0], nbrs[best].pubkey[1],
+                 nbrs[best].pubkey[2], nbrs[best].pubkey[3],
+                 (unsigned long)secs_ago, (int)nbrs[best].snr_x4);
     }
+    if (first) { out("-none-"); return; }
+    buf[pos] = '\0';
+    out(buf);
 }
 
 extern uint32_t get_tx_budget_ms(void);

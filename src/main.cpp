@@ -869,10 +869,13 @@ static bool process_pkt(const uint8_t* data, int len) {
 
     // ── Neighbor cache: record every ADVERT we hear ──────────────────────────
     if (ptype == PAYLOAD_ADVERT && payload_len >= 40) {
-        uint32_t adv_ts;
-        memcpy(&adv_ts, payload_ptr + 32, 4);
-        int8_t snr_x4 = (int8_t)(radio.getSNR() * 4.0f);
-        neighbor_add(payload_ptr, adv_ts, snr_x4);
+        // Skip SELF adverts (our own pubkey) — matches official's self_id.matches().
+        // Store the time we HEARD it (our clock) so the reply can show secs-ago.
+        if (memcmp(payload_ptr, own_pubkey, 32) != 0) {
+            uint32_t heard_s = millis() / 1000UL;
+            int8_t snr_x4 = (int8_t)(radio.getSNR() * 4.0f);
+            neighbor_add(payload_ptr, heard_s, snr_x4);
+        }
     }
 
     // ── Mesh-admin packets addressed to us (dest_hash == own_hash) ──────────
