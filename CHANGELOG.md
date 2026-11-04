@@ -61,6 +61,19 @@ mesh. USB remains the primary channel; this is field access.
   gate). Off by default so a busy mesh doesn't flood the ring; `log start`
   begins capturing RX RSSI/SNR/len into the ring, `log stop` ends it. The line
   still prints to the USB console either way (live debug).
+- **RX duty cycle (`set radio.rxps <0-10>`)** — power saving via the SX1262's
+  *native* RX duty-cycle mode: the radio hardware cycles a short RX window
+  (sized to a full max-frame on-air time) and a longer standby window instead
+  of listening continuously. DIO1 still wakes the MCU on a packet, so the
+  interrupt-driven receive/relay path is unchanged. `0` (default) = off
+  (continuous RX); `1–10` = aggressiveness (level 1 ≈ 50 % RX, level 10 ≈ 9 %
+  RX at SF8/62.5 kHz). **Automatically suspended while a mesh-admin session is
+  active** (`acl_count() > 0`) so a remote admin can always reach the node,
+  then resumed on the next RX re-arm. The level is stored in the node-config
+  flash record — it fits in the record's existing 2-byte padding, so the
+  on-flash layout and CRC are unchanged and pre-existing devices keep their
+  settings (defaulting to off). The MCU still idles with `__WFI()` between
+  interrupts in all modes.
 
 ### Fixed
 - **X25519 scalar (critical interop bug)**: the key exchange must use the

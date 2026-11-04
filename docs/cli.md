@@ -54,7 +54,8 @@ Hardware constraints that shape the subset:
 | 24 | `get direct.txdelay` / `set <0-2>` | get/set | Default **0.3** (repeater) |
 | 25 | `get dutycycle` / `set <1-100>` | get/set | EU 868 MHz → default **10** (%), stricter than reference 50 % |
 | 26 | `get flood.max` / `set <0-64>` | get/set | Default **64** |
-| 27 | `erase` | op (serial) | Factory reset: clear preferences page + reboot. Destructive — but with USB as the only admin path, this is the recovery mechanism |
+| 27 | `get radio.rxps` / `set <0-10>` | get/set | **RX duty cycle.** 0 = off (continuous RX). 1–10 = aggressiveness (higher = radio sleeps longer between RX windows). Uses the native SX1262 RX duty-cycle mode (radio HW cycles RX↔standby, DIO1 still wakes the MCU on a packet). **Automatically suspended while a mesh-admin session is active** (continuous RX for admin traffic). Default **0** (off) |
+| 28 | `erase` | op (serial) | Factory reset: clear preferences page + reboot. Destructive — but with USB as the only admin path, this is the recovery mechanism |
 
 ### Explicitly NOT implemented (no hardware / not applicable to this role)
 
@@ -240,6 +241,7 @@ OK
 | `get direct.txdelay` / `set <0-2>` | `0.3` / `OK` | direct traffic delay factor |
 | `get dutycycle` / `set <1-100>` | `10` / `OK` | EU default 10 % |
 | `get flood.max` / `set <0-64>` | `64` / `OK` | max flood hops |
+| `get radio.rxps` / `set <0-10>` | `0` / `OK` | RX duty cycle: 0 off, 1–10 aggressiveness. Off while a mesh-admin session is active |
 | `password <pw>` | `password now: <pw>` | official shortcut: sets the admin password (echoes it back to confirm) |
 | `set admin.password <pw>` | `OK (admin enabled)` | **enables mesh admin**; bare `set admin.password` (no value) clears it → `OK (admin disabled)`; see §3.6 |
 | `get admin.password` | password / `(empty)` | |
@@ -342,6 +344,39 @@ firmware at SPECTER, log in with the admin password (or leave it blank for
 guest), and run e.g. `get name` / `set name <n>` / `stats-core` — or just
 press *Repeater Status* / *Get Position* in the app. See
 [development-notes.md](development-notes.md#mesh-administration-protocol) for the full wire layout.
+
+> **Note:** while a mesh-admin session is active the node forces continuous RX
+> (the RX duty cycle is suspended) so it keeps listening for admin traffic —
+> see §3.7.
+
+### 3.7 RX duty cycle (power saving)
+
+`set radio.rxps <0-10>` enables the **RX duty cycle**: the SX1262's native
+low-power RX mode, in which the radio hardware cycles between a short RX window
+and a longer standby window, instead of listening continuously. DIO1 still
+fires when a packet arrives in an RX window, so the interrupt-driven receive
+path (and all relaying) is unchanged — a packet simply waits for the next RX
+window if it lands in a standby window.
+
+- **0** (default) = off → continuous RX (the original behaviour).
+- **1–10** = aggressiveness. Higher = longer standby between RX windows =
+  lower RX duty cycle (level 1 ≈ 50 % RX, level 10 ≈ 9 % RX at SF8/62.5 kHz).
+  The RX window is sized to the on-air time of a full max frame, so a packet
+  that starts in an RX window is received in full before the radio sleeps.
+
+**Interaction with mesh admin:** the duty cycle is **automatically suspended
+while a mesh-admin session is active** (`acl_count() > 0`) and resumed once the
+session ends (on the next RX re-arm). This is required so a remote admin can
+reliably reach the node — an admin session needs continuous RX to catch
+commands and deliver replies. The level itself is stored in the node-config
+flash record (it fits in the record's existing padding, so the on-flash layout
+and CRC are unchanged and pre-existing devices keep their settings, defaulting
+to off).
+
+This matches the intent of the community power-saving firmwares (e.g. IoTThinks
+EasySkyMesh), which gate their sleep on “no pending work”; SPECTER's equivalent
+“no pending work” condition is *no active admin session*. The MCU still idles
+with `__WFI()` between interrupts in all modes.
 
 ## 4. Implementation plan
 

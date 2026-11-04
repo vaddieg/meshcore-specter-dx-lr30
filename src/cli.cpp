@@ -570,6 +570,16 @@ static void set_af(int argc, char** argv) {
     out("OK");
 }
 
+static void get_rxps(void) { getv_num(cfg.rxps_level); }
+static void set_rxps(int argc, char** argv) {
+    if (argc < 3) { out("Err: usage: set radio.rxps <0-10>"); return; }
+    long v;
+    if (parse_int(argv[2], &v) || v < 0 || v > 10) { out("Err: 0-10"); return; }
+    cfg.rxps_level = (uint8_t)v;
+    prefs_save();
+    out(v ? "OK" : "OK (off)");
+}
+
 static void get_flood_max(void) { getv_num(cfg.flood_max); }
 static void set_flood_max(int argc, char** argv) {
     if (argc < 3) { out("Err: usage: set flood.max <0-64>"); return; }
@@ -735,6 +745,7 @@ static void handle_line(char* raw) {
         else if (!strcmp(g, "dutycycle"))   get_dutycycle();
         else if (!strcmp(g, "af"))          get_af();
         else if (!strcmp(g, "flood.max"))   get_flood_max();
+        else if (!strcmp(g, "radio.rxps"))  get_rxps();
         else if (!strcmp(g, "admin.password")) get_admin_password();
         else if (!strcmp(g, "guest.password")) get_guest_password();
         else if (!strcmp(g, "admin.timeout"))  get_admin_timeout();
@@ -762,6 +773,7 @@ static void handle_line(char* raw) {
         else if (!strcmp(s, "dutycycle"))           set_dutycycle(argc, argv);
         else if (!strcmp(s, "af"))                  set_af(argc, argv);
         else if (!strcmp(s, "flood.max"))           set_flood_max(argc, argv);
+        else if (!strcmp(s, "radio.rxps"))          set_rxps(argc, argv);
         else if (!strcmp(s, "admin.password"))      set_admin_password(argc, argv);
         else if (!strcmp(s, "guest.password"))      set_guest_password(argc, argv);
         else if (!strcmp(s, "admin.timeout"))       set_admin_timeout(argc, argv);

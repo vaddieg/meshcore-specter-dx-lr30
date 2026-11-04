@@ -41,6 +41,7 @@ struct NodeConfig {
     uint8_t  direct_txdelay_x10;
     uint8_t  dutycycle;        // 1-100 %
     uint8_t  flood_max;        // 0-64
+    uint8_t  rxps_level;       // 0 off, 1-10 RX duty-cycle aggressiveness (off while admin session active)
 };
 
 extern NodeConfig cfg;

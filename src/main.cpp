@@ -1152,6 +1152,30 @@ void cli_send_advert_now(bool zero_hop) {
     }
 }
 
+// ─── Arm the radio for receive ───────────────────────────────────────────────
+// Plain continuous RX, or the native SX1262 RX duty cycle (radio hardware
+// cycles RX↔standby; DIO1 still fires on a packet so the rx_flag path is
+// unchanged). The duty cycle is suspended while a mesh-admin session is active
+// (acl_count()>0) so the node listens continuously for admin traffic.
+//   rxPeriod  = on-air time of a max frame (enough to catch a full frame)
+//   sleepPeriod = rxPeriod * level  (level 1-10 → 50% … ~9% duty cycle)
+static void arm_rx(void) {
+    rf_rx();
+    int err;
+    if (cfg.rxps_level > 0 && acl_count() == 0) {
+        uint32_t rxp = (uint32_t)(radio.getTimeOnAir(MAX_PKT) / 1000UL);
+        if (rxp < 50) rxp = radio_airtime_ms;   // fallback if radio not ready
+        uint32_t slp = rxp * (uint32_t)cfg.rxps_level;
+        err = radio.startReceiveDutyCycle(rxp, slp);
+    } else {
+        err = radio.startReceive();
+    }
+    if (err != RADIOLIB_ERR_NONE) {
+        slog("startReceive err: %d", (int)err);
+    }
+    rx_started = true;
+}
+
 void loop(void) {
     IWatchdog.reload();
     uint32_t now = millis();
@@ -1280,15 +1304,11 @@ void loop(void) {
     // ── Interrupt-driven receive (DIO1/PC15 fires on RxDone) ─────────────────
     // DIO1 is connected to PC15 on this HW revision, so we use setDio1Action()
     // (registered in radio_init) instead of polling getIrqFlags(). The ISR sets
-    // rx_flag; here we react to it. startReceive() arms the radio; on RxDone the
-    // ISR fires, we read the packet, and re-arm.
+    // rx_flag; here we react to it. arm_rx() arms the radio (continuous RX, or
+    // the RX duty cycle when enabled and no admin session is active); on
+    // RxDone the ISR fires, we read the packet, and re-arm.
     if (!rx_started) {
-        rf_rx();
-        int err = radio.startReceive();
-        if (err != RADIOLIB_ERR_NONE) {
-            slog("startReceive err: %d", (int)err);
-        }
-        rx_started = true;
+        arm_rx();
     }
 
     if (rx_flag) {
