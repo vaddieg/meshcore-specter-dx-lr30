@@ -112,8 +112,15 @@ uint32_t stat_advert = 0;   // adverts transmitted
 #define LED_OFF   LOW
 
 // ─── Radio settings ──────────────────────────────────────────────────────────
-#define LORA_PREAMBLE 8
 #define LORA_SYNC   0x12         // LoRa private network
+
+// Preamble length, matching the official MeshCore (preambleLengthForSF):
+// 32 symbols for SF<=8, 16 for SF9-12. The preamble is a SINGLE SX1262
+// register shared by TX and RX. A long RX preamble is what lets the native
+// RX duty cycle (radio.rxps) catch a packet whose preamble lands in a sleep
+// window, and it must match peers for both directions to work — the official
+// firmware transmits 32 on SF8, so 32 here keeps us mutually audible.
+static uint16_t preamble_for_sf(uint8_t sf) { return (sf <= 8) ? 32 : 16; }
 
 // ─── MeshCore protocol constants ─────────────────────────────────────────────
 #define ROUTE_TRANSPORT_FLOOD  0x00
@@ -339,7 +346,7 @@ static bool radio_init(void) {
     float freq_mhz = cfg.freq_khz / 1000.0f;
     float bw_khz   = cfg.bw_tenth / 10.0f;
     int state = radio.begin(freq_mhz, bw_khz, cfg.sf, cfg.cr,
-                            LORA_SYNC, cfg.tx_dbm, LORA_PREAMBLE);
+                            LORA_SYNC, cfg.tx_dbm, preamble_for_sf(cfg.sf));
     if (state != RADIOLIB_ERR_NONE) {
         Serial1.print("FAILED: "); Serial1.println(state);
         return false;

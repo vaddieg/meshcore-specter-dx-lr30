@@ -74,6 +74,15 @@ mesh. USB remains the primary channel; this is field access.
   on-flash layout and CRC are unchanged and pre-existing devices keep their
   settings (defaulting to off). The MCU still idles with `__WFI()` between
   interrupts in all modes.
+- **RX preamble matched to the official firmware (32 for SF≤8, 16 for SF9–12)**:
+  the native RX duty cycle only catches a packet whose *preamble* overlaps an
+  RX window, so the LoRa preamble is now set to the official MeshCore value
+  (`preambleLengthForSF`) in `radio.begin()` instead of a fixed 8. The preamble
+  is one SX1262 register shared by TX and RX; a 32-symbol preamble on SF8 is
+  what lets the radio bridge the standby gap, and it keeps SPECTER mutually
+  audible with official-firmware peers (which transmit 32 on SF8). The earlier
+  8-symbol preamble was too short to bridge the gap and left the node fully
+  deaf under RXDC.
 
 ### Fixed
 - **X25519 scalar (critical interop bug)**: the key exchange must use the

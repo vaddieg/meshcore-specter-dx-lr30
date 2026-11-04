@@ -364,6 +364,17 @@ window if it lands in a standby window.
   The RX window is sized to the on-air time of a full max frame, so a packet
   that starts in an RX window is received in full before the radio sleeps.
 
+**Preamble (why RXDC works at all):** in the duty-cycle mode the radio only
+"hears" a packet whose **preamble overlaps an RX window** — the chip latches
+the preamble and stays awake for the rest of the frame. SPECTER therefore sets
+the LoRa preamble to **32 symbols for SF≤8, 16 for SF9–12** (the exact value the
+official MeshCore firmware uses, `preambleLengthForSF`), applied in `radio
+.begin()`. This is a single SX1262 register shared by TX and RX, so it also
+lengthens our own TX preamble by ~33 ms at SF8/62.5 kHz — negligible — and it
+keeps us mutually audible with official-firmware peers (which transmit 32 on
+SF8). An 8-symbol preamble is far too short to bridge the standby gap, which is
+why an earlier build went fully deaf under RXDC.
+
 **Interaction with mesh admin:** the duty cycle is **automatically suspended
 while a mesh-admin session is active** (`acl_count() > 0`) and resumed once the
 session ends (on the next RX re-arm). This is required so a remote admin can
