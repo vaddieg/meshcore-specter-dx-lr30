@@ -217,18 +217,6 @@ real app's parser.
   feature detection (`varMinVersion`): 1.14.0 exposes `loop.detect`. The
   number only drives `supportsVar`, nothing else.
 
-### Notes
-- **CH340 USB quirk:** after a CLI `reboot`, the Mac-side USB-serial link
-  drops and needs a cable power-cycle to re-establish. The device reboots
-  fine underneath and all settings persist across the reboot (verified).
-- **Bootloader entry over USB is not possible** on the DX-LR30: the CH340C's
-  DTR/RTS outputs are unconnected (no auto-DFU circuit on this hardware),
-  verified with pyserial and `stm32flash -i` sweeps on Linux (real ch341
-  driver). Headless flashing: use the 4-pin SWD header (**V G D C** =
-  3V3/GND/SWDIO PA13/SWCLK PA14) with an **ST-Link V2** — see README and
-  `docs/flashing.md`. Pressing the KEY button occasionally drops the board
-  into the bootloader (noise on BOOT0) — unreliable, not a method.
-
 ---
 
 ## [1.4.0]
@@ -375,16 +363,10 @@ real app's parser.
 - Dedup cache to avoid relay storms
 - ADVERT payload format (flags, node name)
 
-### Phase 3: Radio Parameter Tuning
-- Discovered companion was configured at 869.618 MHz (not default 869.525)
-- Confirmed SF=8, BW=62.5 kHz, CR=4/5, SyncWord=0x12
-
 ### Phase 4: Critical Fixes
 - **Day 1**: "0 repeaters" in app → suspected radio params
 - **Day 2**: Radio params matched, still not visible → suspected signature validation
 - **Day 3**: Implemented Ed25519 signing → **REPEATER APPEARED!**
-- **Day 4**: Discovered receive blocking issue → switched to polling mode
-- **Day 5**: Flash failures at 115200 → discovered 57600 baud requirement
 
 ### Phase 5: Documentation & Polish
 - Created comprehensive docs/ directory
@@ -412,7 +394,6 @@ When reporting issues, include:
 - Companion device and firmware version
 - Radio parameters in use
 - Serial monitor output showing the issue
-- Whether `stm32flash -b 57600` succeeded or failed
 
 ---
 

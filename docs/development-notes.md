@@ -27,65 +27,6 @@ stm32flash -b 115200 /dev/ttyUSB0 2>&1
 
 ---
 
-## RadioLib Polling Mode (DIO1 Not Connected)
-
-The DX-LR30 PCB **does not route SX1262 DIO1 to the STM32**. This forces
-RadioLib into **polling mode**.
-
-### The Problem
-
-RadioLib's `radio.receive()` with `RADIOLIB_NC` for DIO1 **blocks forever**:
-
-```cpp
-// ❌ THIS HANGS FOREVER:
-int state = radio.receive(buf, sizeof(buf));
-```
-
-The SX1262 sets the RxDone interrupt flag internally, but RadioLib never sees
-it because there's no GPIO edge to wake from the blocking call.
-
-### The Solution
-
-Use **non-blocking receive** with manual IRQ polling:
-
-```cpp
-// ✅ Start receive in background:
-radio.startReceive();
-
-// In main loop:
-uint16_t irq = radio.getIrqFlags();
-if (irq & 0x0002) {  // RxDone bit
-    uint8_t buf[256];
-    int state = radio.readData(buf, sizeof(buf));
-    if (state == RADIOLIB_ERR_NONE) {
-        // Process packet
-    }
-    radio.startReceive();  // Restart for next packet
-}
-```
-
-### IRQ Flag Reference
-
-| Bit | Mask | Meaning |
-|-----|------|---------|
-| 0 | 0x0001 | TxDone |
-| 1 | 0x0002 | RxDone |
-| 2 | 0x0004 | PreambleDetected |
-| 3 | 0x0008 | SyncWordValid |
-| 4 | 0x0010 | HeaderValid |
-| 5 | 0x0020 | HeaderErr |
-| 6 | 0x0040 | CrcErr |
-| 7 | 0x0080 | CadDone |
-| 8 | 0x0100 | CadDetected |
-| 9 | 0x0200 | Timeout |
-
-### Why This Matters
-
-Without this fix, the firmware appears to initialize correctly but never
-receives packets. Serial shows `"Listening..."` once and then silence.
-
----
-
 ## Ed25519 Signature Requirement
 
 **MeshCore companions validate ADVERT signatures.** Unsigned or incorrectly
@@ -668,23 +609,12 @@ freq 150–960 MHz, BW 7.8–500 kHz, SF 5–12, CR 5–8.
 
 ---
 
-## CH340 USB Link Drops After CLI `reboot`
-
-After a CLI `reboot` (`NVIC_SystemReset`), the **Mac-side USB-serial link
-drops** and the port goes silent. The device reboots fine underneath and all
-settings persist across the reboot (verified) — the CH340 just needs a cable
-power-cycle to re-enumerate on macOS. A full unplug/replug restores the link.
-This is a CH340/macOS quirk, not a firmware fault.
-
----
-
 ## Conclusion
 
 The DX-LR30 is a **capable and cheap** MeshCore repeater when the following
 are addressed:
 
 - ✅ Use **115200 8E1** for stm32flash
-- ✅ Use **non-blocking RX** with `startReceive()` + `getIrqFlags()`
 - ✅ Implement **real Ed25519 signing** (rweather/Crypto)
 - ✅ Match **all radio parameters** exactly to your network
 
