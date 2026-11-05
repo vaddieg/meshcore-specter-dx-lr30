@@ -240,7 +240,7 @@ OK
 | `get txdelay` / `set <0-2>` | `0.5` / `OK` | flood retransmit delay factor |
 | `get direct.txdelay` / `set <0-2>` | `0.3` / `OK` | direct traffic delay factor |
 | `get dutycycle` / `set <1-100>` | `10` / `OK` | EU default 10 % |
-| `get radio.rxgain` / `set <on\|off>` | `off` / `OK` | RX gain (reg 0x08AC). **off** = power-saving (default, matches official; less noise-sensitive, lower current), **on** = boosted (more sensitive). Applied live (no reboot); persisted |
+| `get radio.rxgain` / `set <on\|off>` | `off` / `OK` | RX gain (reg 0x08AC). **off** = power-saving (default, matches official; lower current), **on** = boosted (more sensitive, ~0.5 mA higher). Applied live (no reboot); persisted |
 | `get flood.max` / `set <0-64>` | `64` / `OK` | max flood hops |
 | `password <pw>` | `password now: <pw>` | official shortcut: sets the admin password (echoes it back to confirm) |
 | `set admin.password <pw>` | `OK (admin enabled)` | **enables mesh admin**; bare `set admin.password` (no value) clears it → `OK (admin disabled)`; see §3.6 |

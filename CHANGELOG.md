@@ -13,10 +13,13 @@ All notable changes to SPECTER firmware are documented here.
   applied at radio init (persisted in the node-config record — the new field
   lives in the record's former trailing pad, so the on-flash size/CRC are
   unchanged and existing devices default to **off**), and the command applies it
-  **live** (no reboot). Motivation: a more-sensitive gain latches weak out-of-
-  band LoRa noise, which can trip RxDone and pull the CPU out of sleep — a
-  likely contributor to the daytime-vs-quiet-night current swing. A/B it with
-  `on`/`off` and watch `get stats` `n_recv_errors` + the battery current.
+  **live** (no reboot).
+  **Measured:** `on` draws ~0.5 mA more than `off` through the battery (16.1 vs
+  15.6 mA) — the boosted LNA state's own current, with no change in RX quality
+  or spurious readouts. That ruled out the "gain latches background noise and
+  wakes the CPU" theory as the cause of the day/night current swing. The command
+  is kept regardless: it's a standard radio control the official firmware also
+  exposes, and `off` is the free lower-current default.
 
 ## [1.15.0]
 
