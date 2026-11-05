@@ -30,6 +30,7 @@ connected to RTS of CH340E, DTR isn't connected too, which makes software DFU ov
 Additional findings:
 - VBAT disconnected, it's an official path for battery metrics
 - STM32F103xx chip has LQFP48 packaging (48 pins) 
+- AMS1117-3.3 voltage regulator with 1.1V dropout
 - The KEY button connected to PB12 which has no effect on entering the bootloader mode.
 
 

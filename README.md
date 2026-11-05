@@ -1,7 +1,7 @@
 # SPECTER MeshCore Repeater for DX-LR30
 
 > The DX-LR30 is a cheap Chinese LoRa shell device.
-> Specter is an energy efficient LoRa Meshcore repeater, consuming 0.5-150 mA (RX average is 30 mA).
+> Specter is an energy efficient LoRa Meshcore repeater, consuming 8-150 mA (RX average is 8 mA).
 > It can be configured over USB using https://config.meshcore.io/ or using the Remote Management
 
 ---
