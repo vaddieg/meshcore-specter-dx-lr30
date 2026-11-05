@@ -72,11 +72,24 @@ static void config_defaults(void) {
 #else
     snprintf(cfg.name, sizeof(cfg.name), "%s", DEF_NAME);
 #endif
-#ifdef NODE_LAT_I
-    cfg.lat_micro = (int32_t)(NODE_LAT_I) * 1000;   // deg*1e4 → deg*1e6
+#if defined(NODE_LAT)
+    cfg.lat_micro = (int32_t)((NODE_LAT) * 1000000.0 + ((NODE_LAT) >= 0 ? 0.5 : -0.5));
+#elif defined(NODE_LAT_I)
+#if (NODE_LAT_I > 900000 || NODE_LAT_I < -900000)
+    cfg.lat_micro = (int32_t)(NODE_LAT_I);
+#else
+    cfg.lat_micro = (int32_t)(NODE_LAT_I) * 1000;
 #endif
-#ifdef NODE_LON_I
+#endif
+
+#if defined(NODE_LON)
+    cfg.lon_micro = (int32_t)((NODE_LON) * 1000000.0 + ((NODE_LON) >= 0 ? 0.5 : -0.5));
+#elif defined(NODE_LON_I)
+#if (NODE_LON_I > 1800000 || NODE_LON_I < -1800000)
+    cfg.lon_micro = (int32_t)(NODE_LON_I);
+#else
     cfg.lon_micro = (int32_t)(NODE_LON_I) * 1000;
+#endif
 #endif
     cfg.freq_khz        = DEF_FREQ_KHZ;
     cfg.bw_tenth        = DEF_BW_TENTH;

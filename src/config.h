@@ -89,6 +89,11 @@ int  console_recent(char* out_lines, int max_lines, int line_len); // returns co
 void set_rx_ring_log(bool on);   // `log start`/`log stop`: gate per-packet RX lines into the ring
 bool rx_ring_log_enabled(void);
 
+// ─── Serial power management (PA10 RX wake + idle sleep) ───────────────────
+void serial_sleep(void);
+void serial_wake(void);
+bool serial_is_active(void);
+
 // ─── hooks implemented in main.cpp, used by CLI handlers ───────────────────
 void cli_reboot(void);
 void cli_send_advert_now(bool zero_hop);

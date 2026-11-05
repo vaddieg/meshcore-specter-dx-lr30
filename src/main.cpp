@@ -257,6 +257,7 @@ static void short_fp(const uint8_t* payload, uint8_t ptype, uint8_t plen, char* 
 // Hex dump a buffer (up to `max` bytes) to the LOCAL USB console only (not the
 // remote log ring), 16 bytes/line, to inspect a dropped / unexpected packet.
 static void hex_dump(const uint8_t* buf, int len, int max) {
+    if (!serial_is_active()) return;
     if (len > max) len = max;
     for (int off = 0; off < len; off += 16) {
         static char hb[48];
@@ -578,11 +579,12 @@ static void slog(const char* fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     console_log(buf);
-    Serial1.println(buf);
+    if (serial_is_active()) Serial1.println(buf);
 }
 // Verbose diagnostic: local USB console only (NOT the remote log ring). Use for
 // per-packet traces and content dumps.
 static void dlog(const char* fmt, ...) {
+    if (!serial_is_active()) return;
     char buf[80];
     va_list ap;
     va_start(ap, fmt);
@@ -599,7 +601,7 @@ static void rxlog(const char* fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    Serial1.println(buf);
+    if (serial_is_active()) Serial1.println(buf);
     if (rx_ring_log_enabled()) console_log(buf);
 }
 
@@ -1141,6 +1143,92 @@ static void peripherals_disable_unused(void) {
 #endif
 }
 
+// ─── Real-Time Clock (RTC) & STOP Mode ───────────────────────────────────────
+// Clocked from LSI (~40 kHz) with 10 ms tick (prescaler = 399).
+// Provides periodic 2-second RTC Alarm wakeups from STOP mode so the independent
+// watchdog (8s timeout) is serviced and millis() / uwTick is adjusted accurately.
+
+extern "C" void RTC_Alarm_IRQHandler(void) {
+    if (EXTI->PR & EXTI_PR_PR17) {
+        EXTI->PR = EXTI_PR_PR17;
+    }
+    RTC->CRL &= ~RTC_CRL_ALRF;
+}
+
+static void rtc_init(void) {
+    __HAL_RCC_PWR_CLK_ENABLE();
+    __HAL_RCC_BKP_CLK_ENABLE();
+    HAL_PWR_EnableBkUpAccess();
+
+    // Enable LSI oscillator
+    RCC->CSR |= RCC_CSR_LSION;
+    while (!(RCC->CSR & RCC_CSR_LSIRDY)) {}
+
+    // Check if RTC is already running from LSI
+    if ((RCC->BDCR & RCC_BDCR_RTCEN) == 0 || (RCC->BDCR & RCC_BDCR_RTCSEL) != RCC_BDCR_RTCSEL_LSI) {
+        // Reset backup domain so RTCSEL can be updated
+        RCC->BDCR |= RCC_BDCR_BDRST;
+        RCC->BDCR &= ~RCC_BDCR_BDRST;
+
+        // Select LSI as RTC clock source and enable RTC
+        RCC->BDCR = RCC_BDCR_RTCSEL_LSI | RCC_BDCR_RTCEN;
+
+        // Wait for RTC register synchronization
+        RTC->CRL &= ~RTC_CRL_RSF;
+        while (!(RTC->CRL & RTC_CRL_RSF)) {}
+
+        // Configure prescaler: 40,000 / 400 = 100 Hz (10 ms per tick)
+        while (!(RTC->CRL & RTC_CRL_RTOFF)) {}
+        RTC->CRL |= RTC_CRL_CNF;
+        RTC->PRLH = 0;
+        RTC->PRLL = 399;
+        RTC->CNTH = 0;
+        RTC->CNTL = 0;
+        RTC->CRL &= ~RTC_CRL_CNF;
+        while (!(RTC->CRL & RTC_CRL_RTOFF)) {}
+    } else {
+        RTC->CRL &= ~RTC_CRL_RSF;
+        while (!(RTC->CRL & RTC_CRL_RSF)) {}
+    }
+
+    // Configure EXTI Line 17 (RTC Alarm)
+    EXTI->PR = EXTI_PR_PR17;             // Clear pending bit
+    EXTI->IMR |= EXTI_IMR_MR17;          // Unmask interrupt line 17
+    EXTI->RTSR |= EXTI_RTSR_TR17;        // Rising trigger for RTC alarm
+
+    // Enable RTC Alarm interrupt in RTC_CRH
+    while (!(RTC->CRL & RTC_CRL_RTOFF)) {}
+    RTC->CRL |= RTC_CRL_CNF;
+    RTC->CRH |= RTC_CRH_ALRIE;
+    RTC->CRL &= ~RTC_CRL_CNF;
+    while (!(RTC->CRL & RTC_CRL_RTOFF)) {}
+
+    // Enable NVIC IRQ
+    NVIC_SetPriority(RTC_Alarm_IRQn, 0x0F);
+    NVIC_EnableIRQ(RTC_Alarm_IRQn);
+}
+
+static inline uint32_t rtc_get_counter(void) {
+    RTC->CRL &= ~RTC_CRL_RSF;
+    while (!(RTC->CRL & RTC_CRL_RSF)) {}
+    uint16_t h1, l, h2;
+    do {
+        h1 = RTC->CNTH;
+        l  = RTC->CNTL;
+        h2 = RTC->CNTH;
+    } while (h1 != h2);
+    return ((uint32_t)h1 << 16) | l;
+}
+
+static void rtc_set_alarm(uint32_t alarm_val) {
+    while (!(RTC->CRL & RTC_CRL_RTOFF)) {}
+    RTC->CRL |= RTC_CRL_CNF;
+    RTC->ALRH = (uint16_t)(alarm_val >> 16);
+    RTC->ALRL = (uint16_t)(alarm_val & 0xFFFF);
+    RTC->CRL &= ~RTC_CRL_CNF;
+    while (!(RTC->CRL & RTC_CRL_RTOFF)) {}
+}
+
 // ─── ARDUINO ENTRY POINTS ───────────────────────────────────────────────────
 
 void setup(void) {
@@ -1163,6 +1251,9 @@ void setup(void) {
 
     // Disable unused MCU peripherals to save power
     peripherals_disable_unused();
+
+    // Initialize RTC on LSI for low-power STOP mode alarm wakeups
+    rtc_init();
 
     // ── Configuration: build-flag defaults ← flash prefs overlay ──────────────
     prefs_load();
@@ -1262,6 +1353,50 @@ void cli_send_advert_now(bool zero_hop) {
         advert_pending = true;
         advert_zerohop = false;
     }
+}
+
+// ─── STOP Mode Manager ──────────────────────────────────────────────────────
+static void enter_stop_mode(void) {
+    // Fall back to standard 8 MHz SLEEP mode (__WFI) if:
+    // - Serial console is active (so USART1 clock stays alive)
+    // - Noise floor sampling session is active (sampling every 100 ms)
+    // - Discovery burst is in progress (1000 ms spacing)
+    // - Incoming packet received flag is pending, or radio RX not yet armed
+    if (serial_is_active() || nf_session_active || discovery_burst > 0 || rx_flag || !rx_started) {
+        __WFI();
+        return;
+    }
+
+    // Clear stale alarm flags
+    EXTI->PR = EXTI_PR_PR17;
+    RTC->CRL &= ~RTC_CRL_ALRF;
+
+    // Set RTC Alarm for 2.0 seconds (200 ticks * 10 ms)
+    uint32_t t_pre = rtc_get_counter();
+    rtc_set_alarm(t_pre + 200);
+
+    // Refresh watchdog before sleep
+    IWatchdog.reload();
+
+    // Enter STOP mode (CPU core clock, HSI/PLL stopped; SRAM preserved; low-power regulator)
+    HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
+
+    // ── Resumed from STOP mode (woken by RTC Alarm, DIO1 PC15, or PA10 RX) ──
+    SystemClock_Config();
+
+    // Adjust uwTick / millis() by actual elapsed time in sleep
+    uint32_t t_post = rtc_get_counter();
+    uint32_t elapsed_ticks = t_post - t_pre;
+    if (elapsed_ticks > 0) {
+        uwTick += elapsed_ticks * 10;
+    }
+
+    // Clear RTC alarm flags
+    EXTI->PR = EXTI_PR_PR17;
+    RTC->CRL &= ~RTC_CRL_ALRF;
+
+    // Refresh watchdog immediately on wake
+    IWatchdog.reload();
 }
 
 void loop(void) {
@@ -1486,5 +1621,6 @@ void loop(void) {
         }
     }
 
-    __WFI();
+    // Sleep until next event (deep STOP mode if serial is idle, or 8 MHz SLEEP if active)
+    enter_stop_mode();
 }
