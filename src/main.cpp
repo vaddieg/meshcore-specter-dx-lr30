@@ -1361,8 +1361,12 @@ static void enter_stop_mode(void) {
     // - Serial console is active (so USART1 clock stays alive)
     // - Noise floor sampling session is active (sampling every 100 ms)
     // - Discovery burst is in progress (1000 ms spacing)
+    // - A mesh-admin session is active (remote CLI over LoRa: the SPI bus must
+    //   stay clocked for the TX/RX transactions the session drives; entering
+    //   STOP mid-transaction resets the core clock under the radio and reboots)
     // - Incoming packet received flag is pending, or radio RX not yet armed
-    if (serial_is_active() || nf_session_active || discovery_burst > 0 || rx_flag || !rx_started) {
+    if (serial_is_active() || nf_session_active || discovery_burst > 0 ||
+        acl_count() > 0 || rx_flag || !rx_started) {
         __WFI();
         return;
     }
