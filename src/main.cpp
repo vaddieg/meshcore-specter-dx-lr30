@@ -24,6 +24,7 @@
 #include <SHA512.h>
 #include <Ed25519.h>
 #include <IWatchdog.h>
+#include "stm32f1xx_hal.h"
 #include "config.h"
 #include "meshcrypto/meshcrypto.h"
 #include "meshcrypto/ed_25519.h"
@@ -85,13 +86,24 @@ static uint32_t stat_direct_dups = 0;
 static uint32_t stat_flood_dups  = 0;
 static uint32_t stat_recv_errors = 0;   // CRC / read errors
 
-// Noise floor (instantaneous RSSI while idle in RX): average of 10 quiet samples
+// Noise floor (instantaneous RSSI while idle in RX): average of N quiet samples
 // (below current floor + 14 dB, matching the official's SAMPLING_THRESHOLD),
-// clamped to -120 dBi. Sampled every 100 ms in loop().
-static int16_t  stat_noise_floor = 0;
-static uint8_t  nf_samples = 0;
-static int32_t  nf_sum     = 0;
-static uint32_t last_nf_ms = 0;
+// clamped to -120 dBm.
+// Sampling session is triggered once every 10 minutes to minimize radio SPI polling
+// and MCU wakeups. An initial session runs 5s after boot once radio is idle in RX.
+#define NF_INTERVAL_MS        600000UL   // 10 minutes between sampling bursts
+#define NF_BURST_SPACING_MS   100UL      // 100 ms between burst samples
+#define NF_BURST_SAMPLES      10         // N subsequent samples to average
+#define NF_MAX_ATTEMPTS       25         // max attempts before concluding session
+
+static int16_t  stat_noise_floor       = 0;
+static uint32_t last_nf_session_ms     = 0;
+static uint32_t last_nf_sample_ms      = 0;
+static uint8_t  nf_samples             = 0;
+static int32_t  nf_sum                 = 0;
+static uint8_t  nf_attempts            = 0;
+static bool     nf_session_active      = false;
+static bool     nf_initial_done        = false;
 
 // Basic packet statistics (declared here so handle_req / the stats response can
 // use them; the RX/TX paths below increment them)
@@ -1039,6 +1051,96 @@ static bool process_pkt(const uint8_t* data, int len) {
     return true;
 }
 
+// ─── System Clock Configuration (8 MHz HSI, PLL OFF) ──────────────────────
+// Overrides the framework's WEAK SystemClock_Config (which ran at 64 MHz via PLL).
+// Running directly on 8 MHz HSI with the PLL disabled cuts STM32 Sleep mode current
+// from ~12 mA down to ~1.5-2 mA.
+extern "C" void SystemClock_Config(void) {
+    RCC_OscInitTypeDef RCC_OscInitStruct = {};
+    RCC_ClkInitTypeDef RCC_ClkInitStruct = {};
+
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+    RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+    RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_OFF;
+    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
+        while (1);
+    }
+
+    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
+                                | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK) {
+        while (1);
+    }
+}
+
+// ─── Peripheral power management ───────────────────────────────────────────
+// Gate clock to unused peripherals and power-down ADC converters initialized by
+// Arduino core defaults, saving unnecessary idle current.
+static void peripherals_disable_unused(void) {
+    // 1. Power down and gate off ADCs if active
+#if defined(ADC1)
+    if (ADC1->CR2 & ADC_CR2_ADON) {
+        ADC1->CR2 &= ~ADC_CR2_ADON;
+    }
+    __HAL_RCC_ADC1_CLK_DISABLE();
+#endif
+#if defined(ADC2)
+    if (ADC2->CR2 & ADC_CR2_ADON) {
+        ADC2->CR2 &= ~ADC_CR2_ADON;
+    }
+    __HAL_RCC_ADC2_CLK_DISABLE();
+#endif
+
+    // 2. Disable unused APB1 peripheral clocks
+#if defined(__HAL_RCC_TIM2_CLK_DISABLE)
+    __HAL_RCC_TIM2_CLK_DISABLE();
+#endif
+#if defined(__HAL_RCC_TIM3_CLK_DISABLE)
+    __HAL_RCC_TIM3_CLK_DISABLE();
+#endif
+#if defined(__HAL_RCC_TIM4_CLK_DISABLE)
+    __HAL_RCC_TIM4_CLK_DISABLE();
+#endif
+#if defined(__HAL_RCC_SPI2_CLK_DISABLE)
+    __HAL_RCC_SPI2_CLK_DISABLE();
+#endif
+#if defined(__HAL_RCC_USART2_CLK_DISABLE)
+    __HAL_RCC_USART2_CLK_DISABLE();
+#endif
+#if defined(__HAL_RCC_USART3_CLK_DISABLE)
+    __HAL_RCC_USART3_CLK_DISABLE();
+#endif
+#if defined(__HAL_RCC_I2C1_CLK_DISABLE)
+    __HAL_RCC_I2C1_CLK_DISABLE();
+#endif
+#if defined(__HAL_RCC_I2C2_CLK_DISABLE)
+    __HAL_RCC_I2C2_CLK_DISABLE();
+#endif
+#if defined(__HAL_RCC_USB_CLK_DISABLE)
+    __HAL_RCC_USB_CLK_DISABLE();
+#endif
+#if defined(__HAL_RCC_CAN1_CLK_DISABLE)
+    __HAL_RCC_CAN1_CLK_DISABLE();
+#endif
+#if defined(__HAL_RCC_WWDG_CLK_DISABLE)
+    __HAL_RCC_WWDG_CLK_DISABLE();
+#endif
+
+    // 3. Disable unused APB2 peripheral clocks (TIM1, GPIOD)
+#if defined(__HAL_RCC_TIM1_CLK_DISABLE)
+    __HAL_RCC_TIM1_CLK_DISABLE();
+#endif
+#if defined(__HAL_RCC_GPIOD_CLK_DISABLE)
+    __HAL_RCC_GPIOD_CLK_DISABLE();
+#endif
+}
+
 // ─── ARDUINO ENTRY POINTS ───────────────────────────────────────────────────
 
 void setup(void) {
@@ -1058,6 +1160,9 @@ void setup(void) {
     Serial1.begin(115200);
     delay(200);
     IWatchdog.begin(8000000);  // 8 s IWDG — auto-resets if radio HALT or loop freeze
+
+    // Disable unused MCU peripherals to save power
+    peripherals_disable_unused();
 
     // ── Configuration: build-flag defaults ← flash prefs overlay ──────────────
     prefs_load();
@@ -1340,21 +1445,43 @@ void loop(void) {
     //   - DIO1 (PC15) interrupt wakes on incoming packet → sets rx_flag
     // This reduces CPU power vs. spinning the loop continuously.
 
-    // Noise floor: sample the instantaneous RSSI (GET_RSSI_INST) every 200 ms
-    // while idle in RX. Average of 10 quiet samples (below current floor + 14 dB,
-    // matching the official's SAMPLING_THRESHOLD); clamped to -120 dBi. The
-    // official averages 64 continuous samples; 10 @ 100 ms is precise enough here.
-    if (rx_started && (now - last_nf_ms) >= 200) {
-        last_nf_ms = now;
-        int rssi = (int)radio.getRSSI(false);
-        if (stat_noise_floor == 0 || rssi < stat_noise_floor + 14) {
-            nf_sum += rssi;
-            if (nf_samples < 10) nf_samples++;
-            if (nf_samples >= 10) {
-                stat_noise_floor = (int16_t)(nf_sum / nf_samples);
-                if (stat_noise_floor < -120) stat_noise_floor = -120;
-                nf_samples = 0;
-                nf_sum = 0;
+    // ── Noise floor sampling (triggered once per 10 minutes) ───────────────────
+    // Instead of polling RSSI over SPI continuously every 200 ms, trigger a brief
+    // session of N subsequent samples (100 ms apart) once every 10 minutes.
+    if (rx_started && !nf_session_active) {
+        if (!nf_initial_done && now >= 5000UL) {
+            nf_session_active  = true;
+            nf_initial_done    = true;
+            last_nf_session_ms = now;
+            last_nf_sample_ms  = 0;
+            nf_samples         = 0;
+            nf_sum             = 0;
+            nf_attempts        = 0;
+        } else if (nf_initial_done && (now - last_nf_session_ms) >= NF_INTERVAL_MS) {
+            nf_session_active  = true;
+            last_nf_session_ms = now;
+            last_nf_sample_ms  = 0;
+            nf_samples         = 0;
+            nf_sum             = 0;
+            nf_attempts        = 0;
+        }
+    }
+
+    if (nf_session_active && rx_started) {
+        if ((now - last_nf_sample_ms) >= NF_BURST_SPACING_MS) {
+            last_nf_sample_ms = now;
+            nf_attempts++;
+            int rssi = (int)radio.getRSSI(false);
+            if (stat_noise_floor == 0 || rssi < stat_noise_floor + 14) {
+                nf_sum += rssi;
+                nf_samples++;
+            }
+            if (nf_samples >= NF_BURST_SAMPLES || nf_attempts >= NF_MAX_ATTEMPTS) {
+                if (nf_samples > 0) {
+                    stat_noise_floor = (int16_t)(nf_sum / nf_samples);
+                    if (stat_noise_floor < -120) stat_noise_floor = -120;
+                }
+                nf_session_active = false;
             }
         }
     }
