@@ -130,10 +130,10 @@ sequenceDiagram
     You->>HW: 3. Release RESET
     Note over HW: STM32 samples BOOT0=HIGH<br/>→ starts UART bootloader
     You->>HW: 4. Release BOOT0
-    Note over HW: LED stays ON<br/>Ready for stm32flash @ 57600 8E1
+    Note over HW: LED stays ON<br/>Ready for stm32flash @ 115200 8E1
 ```
 
-> ⚠️ **CRITICAL:** This board requires `-b 57600` (not 115200). See [development-notes.md](development-notes.md#critical-stm32-bootloader-baud-rate) for details.
+> The ROM bootloader listens at **115200 8E1** (8 data bits, even parity, 1 stop bit).
 
 ### Step 3, Flash
 
@@ -142,7 +142,7 @@ stm32flash \
   -w .pio/build/specter/firmware.bin \
   -v \
   -R \
-  -b 57600 \
+  -b 115200 \
   /dev/ttyUSB0
 ```
 
@@ -154,7 +154,7 @@ stm32flash 0.7
 http://stm32flash.sourceforge.net/
 
 Using Parser : Raw BINARY
-Interface serial_posix: 57600 8E1
+Interface serial_posix: 115200 8E1
 Version      : 0x22
 Option 1     : 0x00
 Option 2     : 0x00
@@ -211,7 +211,7 @@ stm32flash: Failed to init device.
 **Cause:** The STM32 is not in bootloader mode, or wrong baud/port.
 
 **Fix:**
-1. **Use 57600 baud** (this board does NOT work reliably at 115200)
+1. **Use 115200 8E1** (8 data bits, even parity, 1 stop bit)
 2. Repeat the button sequence, it takes practice
 3. The LED should stay solid ON while in bootloader (not blinking)
 4. Verify the port: `ls /dev/ttyUSB*` and adjust the command
@@ -346,7 +346,7 @@ Or build with PlatformIO and upload over ST-Link by switching the env to
 ## Physical buttons (always works)
 
 Hold BOOT0, press RESET, release RESET, release BOOT0, then flash at
-57600 8E1.
+115200 8E1.
 
 ---
 

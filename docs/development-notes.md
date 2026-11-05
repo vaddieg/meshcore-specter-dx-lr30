@@ -5,36 +5,20 @@ that are not obvious from datasheets or library documentation.
 
 ---
 
-## Critical: STM32 Bootloader Baud Rate
+## STM32 Bootloader Baud Rate
 
-⚠️ **The DX-LR30's STM32F103C8T6 bootloader only responds at 57600 baud.**
-
-### The Problem
-
-Standard STM32 bootloader documentation and most online guides suggest 115200
-baud. On this specific board, **stm32flash fails silently at 115200** with:
-
-```
-Failed to init device.
-```
-
-### The Solution
-
-Always use `-b 57600`:
+The DX-LR30's STM32F103 ROM bootloader listens at **115200 8E1** (8 data
+bits, even parity, 1 stop bit). Use `-b 115200` with stm32flash:
 
 ```bash
-stm32flash -b 57600 -w firmware.bin -v -R /dev/ttyUSB0
+stm32flash -b 115200 -w firmware.bin -v -R /dev/ttyUSB0
 ```
-
-This is likely due to clone chip tolerances or crystal accuracy on this
-particular board revision. The bootloader's auto-baud detection from the
-0x7F byte does not reliably lock at 115200.
 
 ### Verification
 
 ```bash
-# Probe bootloader at 57600 (with BOOT0 held, after RESET):
-stm32flash -b 57600 /dev/ttyUSB0 2>&1
+# Probe bootloader (with BOOT0 held, after RESET):
+stm32flash -b 115200 /dev/ttyUSB0 2>&1
 
 # Expected output:
 # Version      : 0x22
@@ -699,7 +683,7 @@ This is a CH340/macOS quirk, not a firmware fault.
 The DX-LR30 is a **capable and cheap** MeshCore repeater when the following
 are addressed:
 
-- ✅ Use **57600 baud** for stm32flash (not 115200)
+- ✅ Use **115200 8E1** for stm32flash
 - ✅ Use **non-blocking RX** with `startReceive()` + `getIrqFlags()`
 - ✅ Implement **real Ed25519 signing** (rweather/Crypto)
 - ✅ Match **all radio parameters** exactly to your network
