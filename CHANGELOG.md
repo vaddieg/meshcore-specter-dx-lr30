@@ -2,7 +2,23 @@
 
 All notable changes to SPECTER firmware are documented here.
 
-## [1.15.0] - Current
+## [Unreleased]
+
+### Added
+- **`get/set radio.rxgain on|off`** — RX front-end gain (SX1262 reg `0x08AC`):
+  **off** = power-saving (reg `0x94`, less sensitive, lower current — the
+  official firmware's default), **on** = boosted (reg `0x96`, more sensitive).
+  SPECTER previously never touched the register, so it ran on the chip's reset
+  default rather than the official's explicit power-saving setting. It is now
+  applied at radio init (persisted in the node-config record — the new field
+  lives in the record's former trailing pad, so the on-flash size/CRC are
+  unchanged and existing devices default to **off**), and the command applies it
+  **live** (no reboot). Motivation: a more-sensitive gain latches weak out-of-
+  band LoRa noise, which can trip RxDone and pull the CPU out of sleep — a
+  likely contributor to the daytime-vs-quiet-night current swing. A/B it with
+  `on`/`off` and watch `get stats` `n_recv_errors` + the battery current.
+
+## [1.15.0]
 
 Adds **remote mesh administration**: SPECTER can now be administered over the
 LoRa mesh by an official MeshCore companion radio, byte-for-byte compatible

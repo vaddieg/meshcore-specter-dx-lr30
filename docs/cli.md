@@ -65,7 +65,8 @@ Hardware constraints that shape the subset:
   implemented for mesh admin — see *"Mesh administration"* below)
 - `region *` (this build has no region/transport-code support)
 - `start ota`, `clkreboot` (no OTA mechanism yet)
-- `radio.rxgain`, `radio.fem.*` (no FEM on DX-LR30)
+- `radio.fem.*` (no FEM on DX-LR30)
+  (`radio.rxgain` **is** implemented — see the command reference below)
 - `path.hash.mode`, `flood.max.advert`, `flood.max.unscoped`, `rxdelay`,
   `multi.acks`, `cad`, `agc.reset.interval`, `int.thresh`, `adc.multiplier`
   (defer; hash size is fixed at 1 byte in current protocol impl)
@@ -239,6 +240,7 @@ OK
 | `get txdelay` / `set <0-2>` | `0.5` / `OK` | flood retransmit delay factor |
 | `get direct.txdelay` / `set <0-2>` | `0.3` / `OK` | direct traffic delay factor |
 | `get dutycycle` / `set <1-100>` | `10` / `OK` | EU default 10 % |
+| `get radio.rxgain` / `set <on\|off>` | `off` / `OK` | RX gain (reg 0x08AC). **off** = power-saving (default, matches official; less noise-sensitive, lower current), **on** = boosted (more sensitive). Applied live (no reboot); persisted |
 | `get flood.max` / `set <0-64>` | `64` / `OK` | max flood hops |
 | `password <pw>` | `password now: <pw>` | official shortcut: sets the admin password (echoes it back to confirm) |
 | `set admin.password <pw>` | `OK (admin enabled)` | **enables mesh admin**; bare `set admin.password` (no value) clears it → `OK (admin disabled)`; see §3.6 |

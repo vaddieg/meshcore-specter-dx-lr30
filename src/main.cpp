@@ -347,6 +347,12 @@ static bool radio_init(void) {
     radio.setRfSwitchPins(PIN_RXEN, PIN_TXEN);
     radio.setCRC(2);   // CRC-16 on
     radio.setDio1Action(on_dio1);   // DIO1 (PC15) fires on RxDone → sets rx_flag
+    // RX gain (reg 0x08AC): 0x96 boosted / 0x94 power-saving. The driver leaves
+    // this at the chip's reset default unless told otherwise; the official
+    // firmware explicitly drives it to power-saving ('off'). We match that by
+    // default (cfg.rxgain = 0) so weak out-of-band LoRa noise is less likely to
+    // trip RxDone and pull the CPU out of __WFI().
+    radio.setRxBoostedGainMode(cfg.rxgain != 0);
 
     // Estimate worst-case on-air time for duty-cycle enforcement:
     // symbol time = 2^sf / bw; ~160 symbols covers preamble + ~50 B payload
@@ -1104,6 +1110,7 @@ static uint32_t last_burst_ms     = 0;
 // reads them on demand with the `log` command.
 // ─── CLI hooks (declared in config.h, used by cli.cpp) ───────────────────────
 void cli_reboot(void) { NVIC_SystemReset(); }
+void cli_set_rxgain(bool boosted) { radio.setRxBoostedGainMode(boosted); }
 
 // ─── Programmatic bootloader entry (serial "DFU") ────────────────────────────
 // The STM32F103 has no USB DFU. If the board's BOOT0 and RESET lines are

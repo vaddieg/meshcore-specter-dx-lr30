@@ -733,6 +733,7 @@ static void handle_line(char* raw) {
         else if (!strcmp(g, "txdelay"))     get_txdelay();
         else if (!strcmp(g, "direct.txdelay")) { char b[16]; snprintf(b,sizeof(b),"%u.%u",(unsigned)(cfg.direct_txdelay_x10/10),(unsigned)(cfg.direct_txdelay_x10%10)); getv(b); }
         else if (!strcmp(g, "dutycycle"))   get_dutycycle();
+        else if (!strcmp(g, "radio.rxgain")) { char b[4]; snprintf(b, sizeof(b), "%s", cfg.rxgain ? "on" : "off"); getv(b); }
         else if (!strcmp(g, "af"))          get_af();
         else if (!strcmp(g, "flood.max"))   get_flood_max();
         else if (!strcmp(g, "admin.password")) get_admin_password();
@@ -760,6 +761,11 @@ static void handle_line(char* raw) {
         else if (!strcmp(s, "txdelay"))             set_txdelay(argc, argv, false);
         else if (!strcmp(s, "direct.txdelay"))      set_txdelay(argc, argv, true);
         else if (!strcmp(s, "dutycycle"))           set_dutycycle(argc, argv);
+        else if (!strcmp(s, "radio.rxgain")) {
+            if (argc >= 3 && !strcmp(argv[2], "on"))  { cfg.rxgain = 1; cli_set_rxgain(true);  prefs_save(); out("OK"); }
+            else if (argc >= 3 && !strcmp(argv[2], "off")) { cfg.rxgain = 0; cli_set_rxgain(false); prefs_save(); out("OK"); }
+            else out("Err: usage: set radio.rxgain on|off");
+        }
         else if (!strcmp(s, "af"))                  set_af(argc, argv);
         else if (!strcmp(s, "flood.max"))           set_flood_max(argc, argv);
         else if (!strcmp(s, "admin.password"))      set_admin_password(argc, argv);

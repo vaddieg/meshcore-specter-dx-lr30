@@ -41,7 +41,12 @@ struct NodeConfig {
     uint8_t  direct_txdelay_x10;
     uint8_t  dutycycle;        // 1-100 %
     uint8_t  flood_max;        // 0-64
+    uint8_t  rxgain;           // 0 = power-saving gain (default, matches official 'off'),
+                               //     1 = boosted gain (more sensitive). Lives in the
+                               //     record's former trailing pad, so size/CRC are
+                               //     unchanged and existing devices default to 0.
 };
+static_assert(sizeof(NodeConfig) == 60, "NodeConfig must stay 60 B (flash words [2..16])");
 
 extern NodeConfig cfg;
 
@@ -87,6 +92,7 @@ bool rx_ring_log_enabled(void);
 // ─── hooks implemented in main.cpp, used by CLI handlers ───────────────────
 void cli_reboot(void);
 void cli_send_advert_now(bool zero_hop);
+void cli_set_rxgain(bool boosted);   // live setRxBoostedGainMode (no reboot)
 void cli_set_time(uint32_t epoch);
 uint32_t cli_now_epoch(void);
 const char* cli_version_str(void);
