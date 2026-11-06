@@ -2,7 +2,7 @@
 
 All notable changes to SPECTER firmware are documented here.
 
-## [Unreleased]
+## [1.15.1]
 
 ### STOP mode + serial auto-sleep removed
 
