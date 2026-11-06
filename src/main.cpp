@@ -1247,6 +1247,20 @@ void setup(void) {
     // Serial1 = USART1 = PA9(TX)/PA10(RX) = CH340 USB
     Serial1.begin(115200);
     delay(200);
+    // Log the reset reason (RCC->CSR latches how the previous boot ended).
+    // IWDG = watchdog starvation (loop blocked > 8 s); LP = STOP/standby exit
+    // path misbehaving; PIN/POR = hardware/power; SW = our own reboot().
+    {
+        uint32_t r = RCC->CSR;
+        Serial1.print("RESET:");
+        if (r & RCC_CSR_LPWRRSTF) Serial1.print(" STOP/LP");
+        if (r & RCC_CSR_WWDGRSTF) Serial1.print(" WWDG");
+        if (r & RCC_CSR_IWDGRSTF) Serial1.print(" IWDG");
+        if (r & RCC_CSR_SFTRSTF)  Serial1.print(" SW");
+        if (r & RCC_CSR_PORRSTF)  Serial1.print(" POR");
+        if (r & RCC_CSR_PINRSTF)  Serial1.print(" PIN");
+        Serial1.println();
+    }
     IWatchdog.begin(8000000);  // 8 s IWDG — auto-resets if radio HALT or loop freeze
 
     // Disable unused MCU peripherals to save power
@@ -1319,16 +1333,16 @@ void cli_set_rxgain(bool boosted) { radio.setRxBoostedGainMode(boosted); }
 #ifdef DFU_BOOT0_PIN
 void cli_dfu(void) {
     pinMode(DFU_BOOT0_PIN, OUTPUT);
-    pinMode(DFU_RST_PIN,   OUTPUT);
-    digitalWrite(DFU_RST_PIN, HIGH);    // ensure not held in reset
+    pinMode(PIN_NRST,   OUTPUT);
+    digitalWrite(PIN_NRST, HIGH);    // ensure not held in reset
     delay(20);
     Serial1.println("OK - entering bootloader in 1s");
     delay(1000);                        // let the reply drain through CH340
     digitalWrite(DFU_BOOT0_PIN, HIGH);  // BOOT0=1 on the reset edge
     delay(20);
-    digitalWrite(DFU_RST_PIN, LOW);     // pulse NRST
+    digitalWrite(PIN_NRST, LOW);     // pulse NRST
     delay(100);
-    digitalWrite(DFU_RST_PIN, HIGH);    // release → reset with BOOT0 high
+    digitalWrite(PIN_NRST, HIGH);    // release → reset with BOOT0 high
     while (true) { delay(10); }         // (unreachable; bootloader takes over)
 }
 #endif
