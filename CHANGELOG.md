@@ -4,6 +4,21 @@ All notable changes to SPECTER firmware are documented here.
 
 ## [Unreleased]
 
+  ### STOP mode disabled — broken wakeup causes IWDG reset
+
+  The STOP-mode path (below) is **disabled by default** (`SPECTER_STOP_MODE 0` in
+  `src/main.cpp`); the idle path now always uses `__WFI()` (8 MHz SLEEP).
+
+  Root cause: the DIO1 (PC15, EXTI 15) and RTC-alarm (EXTI 17) wakeup sources do
+  not reliably pull the core out of STOP. The board sleeps through incoming LoRa
+  packets (login fails) and the periodic RTC alarm fails to service the 8 s IWDG,
+  so the watchdog resets the board (boot `RESET:` line reports `IWDG`). The
+  `acl_count() > 0` session gate did not help because the hang is in the
+  STOP-wakeup path itself, not just "STOP under an active session".
+
+  Kept behind `SPECTER_STOP_MODE` so it can be re-enabled once the wakeup path is
+  fixed. Note the wakeup-source list below had DIO1 on PA10 — it is actually PC15.
+
   ### SMT32 STOP mode is implemented
 
   1. Hardware RTC Alarm on LSI:

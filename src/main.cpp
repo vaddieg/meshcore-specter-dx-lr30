@@ -33,6 +33,14 @@
 // ─── Version ─────────────────────────────────────────────────────────────────
 #define FW_VERSION "1.15.0"
 
+// ─── Low-power STOP mode ─────────────────────────────────────────────────────
+// 0 = disabled: the idle path always uses __WFI() (8 MHz SLEEP). STOP mode is
+// currently BROKEN on this board — the DIO1 (PC15) / RTC-alarm (EXTI 17) wakeup
+// sources do not reliably pull the core out of STOP, so the loop freezes and the
+// 8 s IWDG resets the board (login packets are missed). Kept behind this flag so
+// it can be re-enabled once the STOP-wakeup path is fixed. See CHANGELOG.
+#define SPECTER_STOP_MODE 0
+
 // ─── Mesh-admin payload types (matching MeshCore) ────────────────────────────
 #define PAYLOAD_TYPE_REQ        0x00   // Request (dest/src hashes + MAC)
 #define PAYLOAD_TYPE_RESPONSE   0x01
@@ -1372,6 +1380,12 @@ void cli_send_advert_now(bool zero_hop) {
 
 // ─── STOP Mode Manager ──────────────────────────────────────────────────────
 static void enter_stop_mode(void) {
+#if !SPECTER_STOP_MODE
+    // STOP mode disabled (broken DIO1/RTC wakeup on this board → IWDG reset):
+    // always use 8 MHz SLEEP. Flip SPECTER_STOP_MODE to 1 to re-enable.
+    __WFI();
+    return;
+#endif
     // Fall back to standard 8 MHz SLEEP mode (__WFI) if:
     // - Serial console is active (so USART1 clock stays alive)
     // - Noise floor sampling session is active (sampling every 100 ms)
