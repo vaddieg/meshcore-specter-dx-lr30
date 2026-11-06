@@ -78,12 +78,23 @@ Try pressing RST, KEY (like for vanila), touching MCU pins, unplug/plug USB unti
 It might take several minutes and a hundred of attempts, but eventually you'll be there.
 Ultimate advice here: If blue LED blinks your board is **NOT IN BOOTLOADER MODE**, keep trying.
 
+### Over USB, if you managed to upload Specter 1.16.0+ at least once
+1. Connect to the Serial Monitor
+```bash
+pio run -e specter -t upload
+```
+2. Type `dfu` and hit enter
+3. Ctrl-C to interrupt the monitor
+Software DFU works by manipulating NRST and BOOT0 pins programmatically. The feature unlocks
+fully autonomous agentic coding cycle
+
 ### Over USB, if you have soldering skills
 BOOT0, which needs to be pulled to 3.3v for bootloader mode is not connected on this board
 ![MCU](docs/img/chip_boot0.jpg)
 
-Solder a thin wire there, and connect it to 3V3, press RST, disconnect -> you're in bootloader
+Solder a thin wire there. And for entering bootloader mode connect the wire to 3V3, press RST, disconnect
 
+---
 Once your board in bootloader mode, either upload commands will work:
 ```bash
 pio run -e specter -t upload

@@ -4,7 +4,25 @@ All notable changes to SPECTER firmware are documented here.
 
 ## [Unreleased]
 
-### Added
+### STOP mode + serial auto-sleep removed
+
+The STOP-mode deep sleep and the PA9/PA10 serial auto-sleep (60 s idle timeout)
+features are **removed**. The idle path now always uses `__WFI()` (8 MHz SLEEP).
+
+Reason: the DIO1 (PC15, EXTI 15) and RTC-alarm (EXTI 17) wakeup sources did not
+reliably pull the core out of STOP. The board slept through incoming LoRa packets
+(remote login failed) and the periodic RTC alarm failed to service the 8 s IWDG,
+so the watchdog reset the board (boot `RESET:` line reported `IWDG`). The ~1.5 mA
+saved was not worth the complexity and the remote-session breakage.
+
+Kept: the 8 MHz HSI downclock (-8 mA, below) - that was the real win - and the
+boot `RESET:` reason log (useful for diagnosing future resets). Also corrected
+`docs/hardware.md` DIO1 to PC15 (was PA15).
+
+### Downclocked to 8 MHz HSI (PLL completely powered down)
+User reported idle current to drop to 8 mA
+
+### RX gain feature
 - **`get/set radio.rxgain on|off`** — RX front-end gain (SX1262 reg `0x08AC`):
   **off** = power-saving (reg `0x94`, less sensitive, lower current — the
   official firmware's default), **on** = boosted (reg `0x96`, more sensitive).

@@ -257,6 +257,7 @@ static void short_fp(const uint8_t* payload, uint8_t ptype, uint8_t plen, char* 
 // Hex dump a buffer (up to `max` bytes) to the LOCAL USB console only (not the
 // remote log ring), 16 bytes/line, to inspect a dropped / unexpected packet.
 static void hex_dump(const uint8_t* buf, int len, int max) {
+    if (!serial_is_active()) return;
     if (len > max) len = max;
     for (int off = 0; off < len; off += 16) {
         static char hb[48];
@@ -578,11 +579,12 @@ static void slog(const char* fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     console_log(buf);
-    Serial1.println(buf);
+    if (serial_is_active()) Serial1.println(buf);
 }
 // Verbose diagnostic: local USB console only (NOT the remote log ring). Use for
 // per-packet traces and content dumps.
 static void dlog(const char* fmt, ...) {
+    if (!serial_is_active()) return;
     char buf[80];
     va_list ap;
     va_start(ap, fmt);
@@ -599,7 +601,7 @@ static void rxlog(const char* fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    Serial1.println(buf);
+    if (serial_is_active()) Serial1.println(buf);
     if (rx_ring_log_enabled()) console_log(buf);
 }
 
@@ -1159,6 +1161,20 @@ void setup(void) {
     // Serial1 = USART1 = PA9(TX)/PA10(RX) = CH340 USB
     Serial1.begin(115200);
     delay(200);
+    // Log the reset reason (RCC->CSR latches how the previous boot ended).
+    // IWDG = watchdog starvation (loop blocked > 8 s); LP = STOP/standby exit
+    // path misbehaving; PIN/POR = hardware/power; SW = our own reboot().
+    {
+        uint32_t r = RCC->CSR;
+        Serial1.print("RESET:");
+        if (r & RCC_CSR_LPWRRSTF) Serial1.print(" STOP/LP");
+        if (r & RCC_CSR_WWDGRSTF) Serial1.print(" WWDG");
+        if (r & RCC_CSR_IWDGRSTF) Serial1.print(" IWDG");
+        if (r & RCC_CSR_SFTRSTF)  Serial1.print(" SW");
+        if (r & RCC_CSR_PORRSTF)  Serial1.print(" POR");
+        if (r & RCC_CSR_PINRSTF)  Serial1.print(" PIN");
+        Serial1.println();
+    }
     IWatchdog.begin(8000000);  // 8 s IWDG — auto-resets if radio HALT or loop freeze
 
     // Disable unused MCU peripherals to save power
@@ -1223,21 +1239,22 @@ void cli_set_rxgain(bool boosted) { radio.setRxBoostedGainMode(boosted); }
 //   -D DFU_BOOT0_PIN=PB12
 //   -D DFU_RST_PIN=PB13
 // then `dfu` over the CLI pulls BOOT0 high, pulses RESET low for 100 ms and
-// lets go → the MCU reboots into the UART bootloader (57600 8E1 on the same
-// USART1/CH340), ready for `stm32flash -w firmware.bin -v -R -b 57600 <port>`.
+// lets go → the MCU reboots into the UART bootloader
+// ready for `stm32flash -w firmware.bin -v -R -b 115200 <port>`.
 #ifdef DFU_BOOT0_PIN
 void cli_dfu(void) {
     pinMode(DFU_BOOT0_PIN, OUTPUT);
-    pinMode(DFU_RST_PIN,   OUTPUT);
-    digitalWrite(DFU_RST_PIN, HIGH);    // ensure not held in reset
+    pinMode(PIN_NRST,   OUTPUT);
+    digitalWrite(PIN_NRST, HIGH);    // ensure not held in reset
     delay(20);
     Serial1.println("OK - entering bootloader in 1s");
     delay(1000);                        // let the reply drain through CH340
     digitalWrite(DFU_BOOT0_PIN, HIGH);  // BOOT0=1 on the reset edge
     delay(20);
-    digitalWrite(DFU_RST_PIN, LOW);     // pulse NRST
+    digitalWrite(PIN_NRST, LOW);     // pulse NRST
     delay(100);
-    digitalWrite(DFU_RST_PIN, HIGH);    // release → reset with BOOT0 high
+    IWatchdog.set(IWDG_TIMEOUT_MAX); //
+    digitalWrite(PIN_NRST, HIGH);    // release → reset with BOOT0 high
     while (true) { delay(10); }         // (unreachable; bootloader takes over)
 }
 #endif
@@ -1264,6 +1281,7 @@ void cli_send_advert_now(bool zero_hop) {
     }
 }
 
+// ─── STOP Mode Manager ──────────────────────────────────────────────────────
 void loop(void) {
     IWatchdog.reload();
     uint32_t now = millis();
@@ -1486,5 +1504,6 @@ void loop(void) {
         }
     }
 
+    // Sleep until next event (8 MHz SLEEP; see the __WFI note above).
     __WFI();
 }

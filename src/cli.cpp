@@ -69,6 +69,12 @@ static void handle_line(char* raw);   // fwd
 // pair must not dispatch again.
 static bool line_closed = false;
 
+// Serial is always active. The PA9/PA10 auto-sleep / 60 s idle-timeout power
+// feature was removed: it saved ~1.5 mA but caused STOP-mode wakeup bugs and
+// flaky remote sessions (the board slept through incoming login packets).
+// See CHANGELOG.
+bool serial_is_active(void) { return true; }
+
 void cli_begin(void) {
     line_len = 0;
 }

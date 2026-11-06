@@ -89,8 +89,13 @@ int  console_recent(char* out_lines, int max_lines, int line_len); // returns co
 void set_rx_ring_log(bool on);   // `log start`/`log stop`: gate per-packet RX lines into the ring
 bool rx_ring_log_enabled(void);
 
+// ─── Serial state ───────────────────────────────────────────────────────────
+// Always active (the PA9/PA10 auto-sleep feature was removed; see CHANGELOG).
+bool serial_is_active(void);
+
 // ─── hooks implemented in main.cpp, used by CLI handlers ───────────────────
 void cli_reboot(void);
+void cli_dfu(void);
 void cli_send_advert_now(bool zero_hop);
 void cli_set_rxgain(bool boosted);   // live setRxBoostedGainMode (no reboot)
 void cli_set_time(uint32_t epoch);
