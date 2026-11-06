@@ -1328,8 +1328,8 @@ void cli_set_rxgain(bool boosted) { radio.setRxBoostedGainMode(boosted); }
 //   -D DFU_BOOT0_PIN=PB12
 //   -D DFU_RST_PIN=PB13
 // then `dfu` over the CLI pulls BOOT0 high, pulses RESET low for 100 ms and
-// lets go → the MCU reboots into the UART bootloader (57600 8E1 on the same
-// USART1/CH340), ready for `stm32flash -w firmware.bin -v -R -b 57600 <port>`.
+// lets go → the MCU reboots into the UART bootloader
+// ready for `stm32flash -w firmware.bin -v -R -b 115200 <port>`.
 #ifdef DFU_BOOT0_PIN
 void cli_dfu(void) {
     pinMode(DFU_BOOT0_PIN, OUTPUT);
@@ -1342,6 +1342,7 @@ void cli_dfu(void) {
     delay(20);
     digitalWrite(PIN_NRST, LOW);     // pulse NRST
     delay(100);
+    IWatchdog.set(IWDG_TIMEOUT_MAX); //
     digitalWrite(PIN_NRST, HIGH);    // release → reset with BOOT0 high
     while (true) { delay(10); }         // (unreachable; bootloader takes over)
 }

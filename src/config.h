@@ -96,6 +96,7 @@ bool serial_is_active(void);
 
 // ─── hooks implemented in main.cpp, used by CLI handlers ───────────────────
 void cli_reboot(void);
+void cli_dfu(void);
 void cli_send_advert_now(bool zero_hop);
 void cli_set_rxgain(bool boosted);   // live setRxBoostedGainMode (no reboot)
 void cli_set_time(uint32_t epoch);
