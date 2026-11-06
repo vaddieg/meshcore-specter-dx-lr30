@@ -69,48 +69,14 @@ static void handle_line(char* raw);   // fwd
 // pair must not dispatch again.
 static bool line_closed = false;
 
-// ─── Serial power management (PA10 RX wake + idle sleep) ───────────────────
-#define SERIAL_IDLE_TIMEOUT_MS 60000UL   // 60 s idle timeout before sleeping USART1
-
-static bool serial_active = true;
-static uint32_t last_serial_activity = 0;
-static volatile bool serial_wake_pending = false;
-
-static void on_rx_wake(void) {
-    serial_wake_pending = true;
-}
-
-bool serial_is_active(void) {
-    return serial_active;
-}
-
-void serial_sleep(void) {
-    if (!serial_active) return;
-    Serial1.print("\r\n[CLI sleep: send any char to wake]\r\n");
-    Serial1.flush();
-    Serial1.end();
-    // Float PA9 so it does not back-feed 3.3V into unpowered CH340 RXD
-    pinMode(PA9, INPUT);
-    // Wake on incoming char on RX
-    pinMode(PA10, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(PA10), on_rx_wake, FALLING);
-    serial_active = false;
-}
-
-void serial_wake(void) {
-    if (serial_active) return;
-    detachInterrupt(digitalPinToInterrupt(PA10));
-    Serial1.begin(115200);
-    serial_active = true;
-    last_serial_activity = millis();
-    Serial1.print("\r\n[CLI active]\r\n> ");
-}
+// Serial is always active. The PA9/PA10 auto-sleep / 60 s idle-timeout power
+// feature was removed: it saved ~1.5 mA but caused STOP-mode wakeup bugs and
+// flaky remote sessions (the board slept through incoming login packets).
+// See CHANGELOG.
+bool serial_is_active(void) { return true; }
 
 void cli_begin(void) {
     line_len = 0;
-    serial_active = true;
-    serial_wake_pending = false;
-    last_serial_activity = millis();
 }
 
 // Official repeater CLI wire protocol (examples/simple_repeater/main.cpp and
@@ -120,28 +86,7 @@ void cli_begin(void) {
 //   - replies are prefixed "  -> " and CRLF-terminated
 //   - multi-line `log` output ends with "   EOF" on its own line
 void cli_poll(void) {
-    uint32_t now = millis();
-
-    if (serial_wake_pending) {
-        serial_wake_pending = false;
-        if (!serial_active) {
-            serial_wake();
-        } else {
-            last_serial_activity = now;
-        }
-    }
-
-    if (!serial_active) {
-        return;
-    }
-
-    if (now - last_serial_activity >= SERIAL_IDLE_TIMEOUT_MS) {
-        serial_sleep();
-        return;
-    }
-
     while (Serial1.available()) {
-        last_serial_activity = now;
         char c = (char)Serial1.read();
         if (c == '\r') {
             Serial1.write(c);                       // echo CR
@@ -177,7 +122,6 @@ static void cap(const char* msg) {
 // Reply: "  -> <text>\r\n"  (marker + CRLF required by config.meshcore.io)
 static void out(const char* s) {
     if (cap_buf) { cap(s); return; }
-    if (!serial_active) return;
     Serial1.print("  -> ");
     Serial1.print(s);
     Serial1.print("\r\n");
@@ -186,7 +130,6 @@ static void out(const char* s) {
 // Numeric reply (out() is const char*; this formats an unsigned long)
 static void out_num(unsigned long v) {
     if (cap_buf) { char b[16]; snprintf(b, sizeof(b), "%lu", v); cap(b); return; }
-    if (!serial_active) return;
     Serial1.print("  -> ");
     Serial1.print(v);
     Serial1.print("\r\n");
@@ -199,14 +142,12 @@ static void out_num(unsigned long v) {
 // "  -> > <value>". Without the "> " the app treats the var as unsupported.
 static void getv(const char* s) {
     if (cap_buf) { cap(s); return; }
-    if (!serial_active) return;
     Serial1.print("  -> > ");
     Serial1.print(s);
     Serial1.print("\r\n");
 }
 static void getv_num(unsigned long v) {
     if (cap_buf) { char b[16]; snprintf(b, sizeof(b), "%lu", v); cap(b); return; }
-    if (!serial_active) return;
     Serial1.print("  -> > ");
     Serial1.print(v);
     Serial1.print("\r\n");
@@ -224,7 +165,6 @@ static void raw_line(const char* s) {
         }
         return;
     }
-    if (!serial_active) return;
     Serial1.print(s);
     Serial1.print("\r\n");
 }
@@ -746,7 +686,6 @@ static void handle_line(char* raw) {
     else if (!strcmp(c, "erase"))                           { cmd_erasectl(); }
     else if (!strcmp(c, "clock"))                           { FINISH(cmd_clock()); }
     else if (!strcmp(c, "neighbors"))                       { FINISH(cmd_neighbors()); }
-    else if (!strcmp(c, "sleep"))                           { serial_sleep(); done = true; }
     else if (!strcmp(c, "log")) {
         if (argc >= 2 && !strcmp(argv[1], "start")) {
             set_rx_ring_log(true);

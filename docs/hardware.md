@@ -47,7 +47,7 @@ Additional findings:
 | PA3  | NRST | → | Radio hard reset |
 | PA0  | TXEN | → | RF switch, TX mode |
 | PA1  | RXEN | → | RF switch, RX mode |
-| PA15 | DIO1 | ← | RxDone flag |
+| PC15 | DIO1 | ← | RxDone flag (verified on HW by multimeter; shared net with LSE OSC32_OUT) |
 
 
 

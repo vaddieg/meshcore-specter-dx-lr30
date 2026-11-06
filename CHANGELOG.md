@@ -4,58 +4,20 @@ All notable changes to SPECTER firmware are documented here.
 
 ## [Unreleased]
 
-  ### STOP mode disabled — broken wakeup causes IWDG reset
+### STOP mode + serial auto-sleep removed
 
-  The STOP-mode path (below) is **disabled by default** (`SPECTER_STOP_MODE 0` in
-  `src/main.cpp`); the idle path now always uses `__WFI()` (8 MHz SLEEP).
+The STOP-mode deep sleep and the PA9/PA10 serial auto-sleep (60 s idle timeout)
+features are **removed**. The idle path now always uses `__WFI()` (8 MHz SLEEP).
 
-  Root cause: the DIO1 (PC15, EXTI 15) and RTC-alarm (EXTI 17) wakeup sources do
-  not reliably pull the core out of STOP. The board sleeps through incoming LoRa
-  packets (login fails) and the periodic RTC alarm fails to service the 8 s IWDG,
-  so the watchdog resets the board (boot `RESET:` line reports `IWDG`). The
-  `acl_count() > 0` session gate did not help because the hang is in the
-  STOP-wakeup path itself, not just "STOP under an active session".
+Reason: the DIO1 (PC15, EXTI 15) and RTC-alarm (EXTI 17) wakeup sources did not
+reliably pull the core out of STOP. The board slept through incoming LoRa packets
+(remote login failed) and the periodic RTC alarm failed to service the 8 s IWDG,
+so the watchdog reset the board (boot `RESET:` line reported `IWDG`). The ~1.5 mA
+saved was not worth the complexity and the remote-session breakage.
 
-  Kept behind `SPECTER_STOP_MODE` so it can be re-enabled once the wakeup path is
-  fixed. Note the wakeup-source list below had DIO1 on PA10 — it is actually PC15.
-
-  ### SMT32 STOP mode is implemented
-
-  1. Hardware RTC Alarm on LSI:
-      • In main.cpp:1146-1230, configured the STM32F103 internal RTC powered by the independent LSI (~40 kHz)
-      oscillator.
-      • Prescaler is configured to 399 (40 000/400 = 100 Hz), giving 10 ms tick resolution.
-      • Configured EXTI Line 17 (RTC_Alarm_IRQn) with rising-edge trigger and implemented RTC_Alarm_IRQHandler to
-      service periodic wakeups.
-  2. STOP Mode Entry & Timing Compensation (enter_stop_mode):
-      • Deep Sleep: Calls HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI):
-          • Turns off HSI and all core/bus clocks.
-          • Puts the 1.8V internal regulator into low-power mode (∼ 20 μA MCU sleep current).
-          • Retains all SRAM, peripheral configurations, and GPIO states.
-      • Wakeup Sources:
-          1. LoRa Reception (PC15 / DIO1 EXTI 15): Wakes the MCU immediately (∼ 5.4 μs) when a packet arrives.
-          2. Serial Console (PA10 RX EXTI 10): Wakes the MCU immediately when a character is typed over USB.
-          3. Periodic RTC Alarm (EXTI 17): Triggers every 2.0 seconds to reload the 8-second hardware watchdog
-          (IWatchdog.reload()) and check MeshCore advert deadlines.
-      • Timing Preservation: Reads the RTC counter before and after sleep, directly advancing uwTick +=
-      elapsed_ticks * 10 so millis() continues tracking real time seamlessly during sleep.
-      • Fallback to Normal Sleep: If the serial CLI is active, a noise floor sampling burst is taking place, or a
-      discovery burst is running, the system safely falls back to standard __WFI() (8 MHz sleep) to avoid
-      dropping UART characters or jittering radio bursts.
-  3. Serial Console Auto-Sleep:
-      • Entering sleep in the CLI (or 60 seconds of inactivity) floats PA9 (TX) and arms PA10 (RX) on falling
-      edge, dropping the board straight into deep STOP mode.
-      
-	### Verification & Testing
-User feedback:
-- Serial console sleep saves ~2 mA, but only has effect on USB draw
-- Board crashes/reboots on "set radio.rxgain on/off"
-- STOP mode shaved off ~1.5 mA, so resulting idle current is ~7 mA, way more than expected ~5 mA
-- Serial console sleep is probably ambiguos afer STOP mode
-
-
-### USART1 / CH340 leakage isolation: 60-second idle timeout, floats PA9 (TX) to stop parasitic back-feed into
-  the USB chip, wakeable by incoming RX byte on PA10.
+Kept: the 8 MHz HSI downclock (-8 mA, below) - that was the real win - and the
+boot `RESET:` reason log (useful for diagnosing future resets). Also corrected
+`docs/hardware.md` DIO1 to PC15 (was PA15).
 
 ### Downclocked to 8 MHz HSI (PLL completely powered down)
 User reported idle current to drop to 8 mA
