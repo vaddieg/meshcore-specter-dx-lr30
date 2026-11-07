@@ -32,6 +32,56 @@ flowchart TD
     VERIFY -- No --> ERR --> BL
 ```
 
+> The flowchart above is the **button** path. The easiest path on a powered,
+> serial-reachable board is **Method 0 (software DFU)** below — no buttons, no
+> ST-Link.
+
+---
+
+## Method 0: Software DFU via CLI (easiest — no buttons, no ST-Link)
+
+The firmware has a **`dfu`** CLI command that drops the board into the ROM
+bootloader by itself: it drives **PB2** (wired to BOOT0 on this board) HIGH and
+pulses NRST. Works fully headless over serial — no physical buttons, no
+ST-Link. This is the path used for routine re-flashes.
+
+### Procedure
+
+```bash
+# 1. Build
+pio run -e specter
+
+# 2. Enter the bootloader over serial (returns in ~1 s)
+python3 /tmp/serial_cmd.py dfu        # → "OK - entering bootloader in 1s"
+#    (or in any serial monitor: type  dfu  and press Enter)
+
+# 3. ⚠️ WAIT ~30 SECONDS — this is the non-obvious part (see note below).
+sleep 30
+
+# 4. Flash + reset
+pio run -e specter -t upload
+#    (raw: stm32flash -w .pio/build/specter/firmware.bin -R -b 115200 /dev/cu.usbserial-10)
+```
+
+**Expected:** after flash the board reboots into the app (5 quick LED blinks),
+and `ver` / `battery` etc. work over serial again.
+
+> **Why wait 30 s?** `dfu` resets the board into the bootloader immediately, but
+> the CH340 pin voltages are still settling from the NRST pulse. The uploader
+> (`pio … -t upload` / `stm32flash`) polls the bootloader handshake; if it starts
+> before the lines settle it fails with `Failed to init device, timeout` even
+> though the board *is* in the bootloader. Waiting ~30 s — or re-plugging the
+> USB cable — clears it. This is a hardware settle time, not a firmware delay.
+
+> **Port:** macOS `/dev/cu.usbserial-10` (CH340); Linux `/dev/ttyUSB0`. The
+> ROM bootloader speaks **115200 8E1**.
+
+### If the flash still times out
+
+1. Wait longer (60 s) and retry `pio run -e specter -t upload`.
+2. Unplug + re-plug the USB cable (fully resets the CH340), then flash.
+3. Fall back to the physical **BOOT0 + RESET** buttons (Method 2) or **SWD**.
+
 ---
 
 ## Prerequisites
@@ -262,9 +312,13 @@ to halt. Verify all 8 SPI/control pins are intact.
 
 ## Programmatic bootloader entry over USB: NOT possible
 
-**Verdict (tested to exhaustion, 2026-10-31):** the DX-LR30 cannot be put
-into the ROM bootloader from the host over USB. Do not spend time on DTR/RTS
-sequences again.
+**Verdict (tested to exhaustion, 2026-10-31):** the DX-LR30 cannot be put into
+the ROM bootloader from the host via **DTR/RTS** — the CH340's control lines
+are unconnected on this board. Do not spend time on DTR/RTS sequences again.
+
+> **Exception:** the firmware **`dfu`** CLI command *does* work — it drives
+> **PB2** (the BOOT0 net) and pulses NRST. See [Method 0](#method-0-software-dfu-via-cli-easiest--no-buttons-no-st-link).
+> What's impossible is *host-driven DTR/RTS*, not bootloader entry in general.
 
 Evidence:
 
@@ -274,7 +328,7 @@ Evidence:
 | same, plus port open/close release tricks | Linux, `ch341-uart` | no reset edge |
 | same sweeps (incl. swapped DTR↔RTS role hypothesis) | macOS, generic CDC driver | no reset edge (macOS driver itself suspect — see note) |
 | `stm32flash -i` GPIO-sequence matrix, 9 sequences (entry arms, pulses, long holds, swapped) | Linux, `ch341-uart` | `Failed to init device` |
-| firmware `dfu` (PB12/KEY line + software reset) | both | reboots into the **app** — PB12 is not the BOOT0 net |
+| firmware `dfu` (early build: PB12/KEY line) | both | reboots into the **app** — PB12 is not the BOOT0 net (superseded: `dfu` now uses PB2 = BOOT0 and **works**, see Method 0) |
 
 Hardware findings that explain it:
 

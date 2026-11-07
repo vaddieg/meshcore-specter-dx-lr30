@@ -716,60 +716,55 @@ static uint8_t cmd_perm_needed(const char* text) {
     return PERM_ADMIN;
 }
 
-// ─── Battery voltage (VDDA) via the internal VREFINT calibration ─────────────
+// ─── Battery voltage (VDDA) via the internal VREFINT ─────────────────────────
 // Measures the analog supply with NO external divider: the ADC reference IS
-// VDDA, so reading the fixed ~1.20 V internal VREFINT against it inverts to
-// the supply voltage. The battery sits on the 3V3 rail (board tolerates up to
+// VDDA, so reading the fixed ~1.2 V internal VREFINT against it inverts to the
+// supply voltage. The battery sits on the 3V3 rail (board tolerates up to
 // 4 V VCC), so VDDA ≈ battery voltage with no over-range risk:
-//     VDDA = 1200 mV * 4096 / VREFINT_ADC
-// The STM32F103 has NO factory VREFINT calibration value in flash, so we use
-// the nominal 1.20 V from the datasheet (min 1.16, max 1.24 V).
+//     VDDA_mV = VREFINT_MV * 4096 / VREFINT_ADC
+// VREFINT is per-chip (datasheet nominal 1.20 V, range 1.16–1.24 V). The F103
+// has no factory calibration word we trust here, so VREFINT_MV is calibrated
+// against a multimeter on VDDA for THIS board: 1180 mV gives ~2 % agreement.
+// (Caveat: the pack drifts upward while charging over USB, so calibrate against
+// a known-good reference at the same charge state.) Re-calibrate per board if
+// accuracy matters (different chips → different VREFINT).
+#define VREFINT_MV 1180
 // The ADC is powered on only for the measurement (a few ms), then off again,
 // to keep idle current low.
 
 uint16_t measure_vdda_mv(void) {
-    //dlog("VREF: enter");
     // Configure ADC1 for a single conversion of the internal VREFINT (ch 17).
     RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;        // ADC1 interface clock
-    //dlog("VREF: clk apb2=0x%08lX", (unsigned long)RCC->APB2ENR);
     ADC1->CR2 = 0;                             // reset control (ADC off)
     ADC1->CR1 = 0;
-    //dlog("VREF: cr reset");
-    // VREFINT/temp-sensor path + EXTSEL=SWSTART(111) + EXTTRIG + power on
+    // VREFINT path + EXTSEL=SWSTART(0b111) + EXTTRIG + power on. EXTSEL/EXTTRIG
+    // must select the software trigger, otherwise the SWSTART write below is a
+    // no-op, EOC never sets, and DR reads 0.
     ADC1->CR2 = ADC_CR2_TSVREFE
               | ADC_CR2_EXTSEL                  // EXTSEL = 0b111 = SWSTART
-              | ADC_CR2_EXTTRIG                 // enable external/sw trigger
+              | ADC_CR2_EXTTRIG                 // enable sw trigger
               | ADC_CR2_ADON;                   // power on
-    //dlog("VREF: adc on cr2=0x%08lX", (unsigned long)ADC1->CR2);
     delay(2);                                  // tSTAB / power-up settle
-    //dlog("VREF: post-delay");
 
     ADC1->SMPR1 = (ADC1->SMPR1 & ~ADC_SMPR1_SMP17) | ADC_SMPR1_SMP17; // 247.5 cyc
     ADC1->SQR3 = 17;                           // rank 1 = VREFINT (ch 17)
     ADC1->SQR2 = 0;
     ADC1->SQR1 = 0;                            // scan length = 1
-    //dlog("VREF: seq set");
 
     // First conversion after power-on is invalid → discard.
     ADC1->CR2 |= ADC_CR2_SWSTART;
-    //dlog("VREF: dummy go");
     for (int i = 0; i < 100000 && !(ADC1->SR & ADC_SR_EOC); i++) {}
-    //dlog("VREF: dummy eoc=%u", (unsigned)((ADC1->SR & ADC_SR_EOC)?1:0));
     (void)ADC1->DR;
 
     // Actual conversion (bounded wait so a stuck ADC can't hang the loop).
     ADC1->CR2 |= ADC_CR2_SWSTART;
-    //dlog("VREF: actual go");
     for (int i = 0; i < 100000 && !(ADC1->SR & ADC_SR_EOC); i++) {}
-    //bool eoc = (ADC1->SR & ADC_SR_EOC) ? true : false;
     uint16_t adc = ADC1->DR;
 
     ADC1->CR2 = 0;                             // power off (ADON + TSVREFE)
-    //dlog("VREF: done adc=%u eoc=%u", (unsigned)adc,
-    //     (unsigned)((ADC1->SR & ADC_SR_EOC)?1:0));
     if (adc == 0) return 0;
-    // VDDA (mV) = 1200 * 4096 / adc   (nominal VREFINT = 1.20 V)
-    return (uint16_t)((uint32_t)1200 * 4096 / adc);
+    // VDDA (mV) = VREFINT_MV * 4096 / adc   (VREFINT_MV is board-calibrated)
+    return (uint16_t)((uint32_t)VREFINT_MV * 4096 / adc);
 }
 
 // REQ (p=0): payload = [dest_hash][src_hash][MAC+AES(ts(4)+req_type(1)+fields)].
@@ -1142,7 +1137,6 @@ extern "C" void SystemClock_Config(void) {
 // Gate clock to unused peripherals and power-down ADC converters initialized by
 // Arduino core defaults, saving unnecessary idle current.
 static void peripherals_disable_unused(void) {
-    return;
     // 1. Power down and gate off ADCs if active
 #if defined(ADC1)
     if (ADC1->CR2 & ADC_CR2_ADON) {
