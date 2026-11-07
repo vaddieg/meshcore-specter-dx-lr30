@@ -35,6 +35,12 @@
 #define ADMIN_OFF     20             // word offset of the admin record
 #define ADMIN_CRCN    15             // words covered by the admin CRC ([20..34])
 
+// Calibration record — words [18..19], the 8 B gap between the two records:
+//  [18] magic
+//  [19] low 16 b = vrefint_mv, high 16 b = temp_offset_c (two's complement)
+#define CALIB_MAGIC   0x43414C42UL   // "CalB"
+#define CALIB_OFF     18             // word offset of the calib record
+
 // 18 words:
 //  [0] magic   [1] version
 //  [2..16] NodeConfig payload (60 B, zero-padded to 64)
@@ -53,6 +59,7 @@ static uint16_t crc16_ccitt(const uint8_t* data, uint32_t len) {
 // ─── Runtime config instance (defined here, shared via config.h) ────────────
 NodeConfig cfg;
 AdminConfig adm;
+CalibConfig cal;
 
 static void admin_defaults(void) {
     memset(&adm, 0, sizeof(adm));   // empty passwords = mesh admin disabled
@@ -62,6 +69,13 @@ static void admin_defaults(void) {
     strncpy(adm.admin_password, ADMIN_PASSWORD, sizeof(adm.admin_password) - 1);
     adm.admin_password[sizeof(adm.admin_password) - 1] = '\0';
     adm.admin_timeout = DEF_ADMIN_TIMEOUT;
+}
+
+static void cal_defaults(void) {
+    // VREFINT default: the board-calibrated value (see main.cpp). `battery.charged`
+    // or `set battery.vref` overrides it in flash per board.
+    cal.vrefint_mv    = 1180;
+    cal.temp_offset_c = 0;
 }
 
 static void config_defaults(void) {
@@ -135,6 +149,9 @@ void prefs_save(void) {
     w[1] = PREFS_VER;
     memcpy(w + 2, &cfg, sizeof(NodeConfig));   // 60 B → words 2..16
     w[17] = crc16_ccitt((const uint8_t*)w, 17 * 4);
+    // Calibration record ([18..19])
+    w[CALIB_OFF]     = CALIB_MAGIC;
+    w[CALIB_OFF + 1] = ((uint32_t)(uint16_t)cal.temp_offset_c << 16) | (uint32_t)cal.vrefint_mv;
     // AdminConfig record ([20..35])
     w[ADMIN_OFF]     = ADMIN_MAGIC;
     w[ADMIN_OFF + 1] = ADMIN_VER;
@@ -163,6 +180,7 @@ void prefs_erase(void) {
 void prefs_load(void) {
     config_defaults();
     admin_defaults();
+    cal_defaults();
     const uint32_t* src = (const uint32_t*)PREFS_ADDR;
     uint32_t w[ADMIN_OFF + ADMIN_CRCN + 1];
     for (int i = 0; i < (int)sizeof(w)/4; i++) w[i] = src[i];   // erased = 0xFFFFFFFF
@@ -182,5 +200,13 @@ void prefs_load(void) {
         memcpy(adm.admin_password, w + ADMIN_OFF + 2, 24); adm.admin_password[23] = '\0';
         memcpy(adm.guest_password, w + ADMIN_OFF + 8, 24); adm.guest_password[23] = '\0';
         adm.admin_timeout = (uint16_t)(w[ADMIN_OFF + 14] & 0xFFFFUL);
+    }
+
+    // Calibration record ([18..19]) — absent/corrupt → keep cal_defaults()
+    if (w[CALIB_OFF] == CALIB_MAGIC) {
+        uint16_t vref = (uint16_t)(w[CALIB_OFF + 1] & 0xFFFFUL);
+        int16_t  toff = (int16_t)(w[CALIB_OFF + 1] >> 16);
+        if (vref >= 1000 && vref <= 1400) cal.vrefint_mv = vref;
+        if (toff >= -12 && toff <= 12)    cal.temp_offset_c = toff;
     }
 }

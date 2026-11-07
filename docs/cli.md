@@ -213,6 +213,11 @@ OK
 | `get role` | `repeater` | |
 | `battery` | `3.888 V` | supply/battery voltage (mV) via internal VREFINT (ADC ch17), 3 decimals. With the battery mod this reads the pack (VDDA + Schottky drop) |
 | `temp` | `25°C` | MCU die temperature, whole °C (ADC ch16, VDDA-scaled, datasheet formula). Integer formatting (newlib-nano has no float printf) |
+| `battery.charged [V]` | `OK - vref=<mV> mV (ref <V> V)` | **admin / local-serial only.** Rescales VREFINT so the current VDDA reading maps to (V − Schottky drop); persists. `V` = full-charge voltage (default `4.2`); pass the real value if your pack tops out lower (e.g. `battery.charged 4.15`). Also shifts the temp reading (VREFINT scales the sensor via VDDA) |
+| `get battery.vref` | `1180` | internal VREFINT (mV) used to invert the ADC to a supply voltage (per-chip) |
+| `set battery.vref <mV>` | `OK` | **admin / local-serial only.** Set VREFINT directly (1000–1400 mV); persists |
+| `get temp.offset` | `0` | temperature offset (whole °C) applied to the sensor reading |
+| `set temp.offset <-12..12>` | `OK` | **admin / local-serial only.** Zero the temp sensor against a reference thermometer (adds the offset to every reading); persists |
 | `get public.key` | 64 hex chars | Ed25519 pubkey |
 | `clock` | epoch seconds | advert timestamp base + uptime |
 | `time <epoch>` | `OK` | re-syncs advert clock (companions reject `\|now-ts\| > 3600 s`) |
@@ -254,7 +259,7 @@ OK
 | `acl` | session lines / `no active sessions` | list active mesh-admin sessions |
 | `reboot` | *(no reply)* | per MeshCore spec |
 | `erase` | `OK` + reboot | **factory reset** — wipes stored settings |
-| `dfu` *(if compiled in)* | `OK - entering bootloader in 1s` | see §3.5 |
+| `dfu` *(if compiled in)* | hint + reboot | enters the UART bootloader. Prints a hint: close the serial monitor (USB drops) and wait ~25–30 s for the CH340 to re-enumerate before uploading. see §3.5 |
 
 Example session:
 
@@ -327,8 +332,12 @@ over the mesh. Keep it ≤ 23 chars (longer is clipped to fit the field).
 **Permission model:**
 | Password | Permission | Can do |
 |---|---|---|
-| `admin.password` | ADMIN | everything, incl. `set`, `reboot`, `erase`, `dfu` |
-| `guest.password` | READ | `get`, `ver`, `board`, `clock`, `time`, `stats-*`, `neighbors`, `log`, `acl` |
+| `admin.password` | ADMIN | everything, incl. `set`, `reboot`, `erase`, `dfu`, and the calibration writes (`battery.charged`, `set battery.vref`, `set temp.offset`) |
+| `guest.password` | READ | `get` (incl. `get battery.vref`, `get temp.offset`), `ver`, `board`, `clock`, `time`, `stats-*`, `neighbors`, `log`, `acl` |
+
+> The calibration **writes** (`battery.charged`, `set battery.vref`, `set temp.offset`) are
+> ADMIN-gated even though `set …` normally needs only READWRITE and `battery …` only READ —
+> they re-tune the analog measurement, so they're restricted to admin or the local serial CLI.
 
 **Sessions** are in-memory (a reboot ends all of them) and expire after
 `admin.timeout` seconds of inactivity. `acl` lists active sessions

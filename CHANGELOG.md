@@ -2,6 +2,35 @@
 
 All notable changes to SPECTER firmware are documented here.
 
+## [Unreleased]
+
+### Analog calibration CLI (VREFINT + temperature offset)
+
+Per-chip analog calibration, persisted in a new flash record (words [18..19] of
+the prefs page, independent of the NodeConfig/AdminConfig records — old devices
+without it fall back to defaults, so it's backward-compatible):
+
+- **`battery.charged [V]`** — with a fully-charged pack, rescales the internal
+  VREFINT so the current VDDA reading maps to (V − Schottky drop), then persists
+  it. `V` is the full-charge voltage (default `4.2`); pass the real value if your
+  pack tops out lower (e.g. `battery.charged 4.15`). This zeroes the `battery`
+  reading against a known reference (replaces the old board-hardcoded
+  `VREFINT_MV`). Note: VREFINT also scales the temp sensor (via VDDA), so a
+  correct calibration improves the temp reading too — calibrate with a *known*
+  pack voltage, not a guess, or both readings shift together.
+- **`get battery.vref` / `set battery.vref <mV>`** — read/set the internal
+  VREFINT (1000–1400 mV) directly.
+- **`get temp.offset` / `set temp.offset <-12..12>`** — read/set an additive
+  whole-°C offset applied to the internal temperature sensor, to zero it against
+  a reference thermometer.
+- The calibration **writes** are ADMIN-gated (admin or local serial only); the
+  **gets** are guest-readable.
+
+Also:
+
+- **`dfu`** now prints a hint to close the serial monitor and wait ~25–30 s for
+  the CH340 to re-enumerate before uploading (the USB link drops on the reset).
+
 ## [1.15.2]
 
 ### Telemetry request (REQ `0x03`) + `temp` command

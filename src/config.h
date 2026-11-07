@@ -61,6 +61,26 @@ struct AdminConfig {
 };
 extern AdminConfig adm;
 
+// ─── Analog calibration (persisted in a third flash record) ──────────────────
+// vrefint_mv: the internal VREFINT voltage (mV) that measure_vdda_mv() inverts
+//   the ADC against to get the supply voltage. It is per-chip, so it's
+//   runtime-calibratable: `battery.charged` (treats the current reading as a
+//   fully-charged 4.2 V pack) or `set battery.vref <mV>`.
+// temp_offset_c: an additive offset (whole °C, -12..+12) applied to the
+//   internal temperature sensor, to zero it against a reference thermometer.
+struct CalibConfig {
+    uint16_t vrefint_mv;      // VREFINT in mV (default 1180)
+    int16_t  temp_offset_c;   // temperature offset in °C (-12..+12, default 0)
+};
+extern CalibConfig cal;
+
+// Analog calibration constants (shared by main.cpp measurement + cli.cpp).
+// The battery-mod 1N5817 Schottky drop, added on top of VDDA to recover the
+// pack voltage. Kept OUT of measure_vdda_mv() so that stays the clean supply
+// reading used to scale the internal temperature sensor.
+#define SHOTTKY_DROP_MV   264   // mV (VDDA → pack)
+#define LIION_CHARGED_MV  4200  // mV (4.2 V), the `battery.charged` reference
+
 // Compile-time default admin password, set via build flag:
 //   -D ADMIN_PASSWORD="s3cret"
 // Seeded into adm.admin_password at first boot (like NODE_LAT_I/NODE_LON_I); a

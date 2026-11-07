@@ -700,6 +700,11 @@ static bool handle_anon_req(const uint8_t* pl, int plen) {
 // Minimum permission a CLI command requires (ACL gate). Fail-safe: unknown → ADMIN.
 static uint8_t cmd_perm_needed(const char* text) {
     while (*text == ' ' || *text == '\t') text++;
+    // Calibration writes: admin or local-serial only (stricter than the generic
+    // "set"→READWRITE and "battery"→READ rules further down).
+    if (!strncmp(text, "battery.charged", 15)) return PERM_ADMIN;
+    if (!strncmp(text, "set battery.vref", 16)) return PERM_ADMIN;
+    if (!strncmp(text, "set temp.offset", 15))  return PERM_ADMIN;
     if (!strncmp(text, "get", 3))       return PERM_READ;
     if (!strncmp(text, "ver", 3))       return PERM_READ;
     if (!strncmp(text, "board", 5))     return PERM_READ;
@@ -716,11 +721,6 @@ static uint8_t cmd_perm_needed(const char* text) {
     return PERM_ADMIN;
 }
 
-// The battery-mod 1N5817 Schottky diode drop, added on top of VDDA to recover
-// the pack voltage (see measure_battery_mv). Kept OUT of measure_vdda_mv() so
-// that function stays the clean analog-supply reading needed to scale the
-// internal temperature sensor (measure_mcu_temp).
-#define SHOTTKY_DROP_MV 240
 // ─── Supply voltage (VDDA) via the internal VREFINT ──────────────────────────
 // Measures the analog supply with NO external divider: the ADC reference IS
 // VDDA, so reading the fixed ~1.2 V internal VREFINT against it inverts to the
@@ -728,15 +728,16 @@ static uint8_t cmd_perm_needed(const char* text) {
 // 4 V VCC), so VDDA ≈ battery voltage with no over-range risk:
 //     VDDA_mV = VREFINT_MV * 4096 / VREFINT_ADC
 // VREFINT is per-chip (datasheet nominal 1.20 V, range 1.16–1.24 V). The F103
-// has no factory calibration word we trust here, so VREFINT_MV is calibrated
-// against a multimeter on VDDA for THIS board: 1180 mV gives ~2 % agreement.
+// has no factory calibration word we trust here, so it lives in cal.vrefint_mv
+// (prefs.cpp) and is calibrated per board: `battery.charged` treats the current
+// reading as a fully-charged 4.2 V pack, or `set battery.vref <mV>` sets it
+// directly. The default (cal_defaults) is 1180 mV, measured on a reference board.
 // (Caveat: the pack drifts upward while charging over USB, so calibrate against
-// a known-good reference at the same charge state.) Re-calibrate per board if
-// accuracy matters (different chips → different VREFINT).
-#define VREFINT_MV 1180
+// a known-good reference at the same charge state.)
 
 // Calibrated 25C ref voltage, needed for temperature measurement, default 1430 
-#define V25REF_MV 1385
+// 1.34 – 1.52 V (±90 mV → ±21°C!)
+#define V25REF_MV 1370
 
 // measure_vdda_mv()  → the true analog supply (VDDA).
 // measure_battery_mv() → VDDA + SHOTTKY_DROP_MV (pack voltage with the mod).
@@ -775,10 +776,10 @@ uint16_t measure_vdda_mv(void) {
 
     ADC1->CR2 = 0;                             // power off (ADON + TSVREFE)
     if (adc == 0) return 0;
-    // VDDA (mV) = VREFINT_MV * 4096 / adc   (VREFINT_MV is board-calibrated).
+    // VDDA (mV) = vrefint_mv * 4096 / adc   (cal.vrefint_mv, runtime-calibrated).
     // This is the clean analog supply — the battery-mod Schottky drop is NOT
     // added here (see measure_battery_mv), so it's safe to scale the temp sensor.
-    return (uint16_t)((uint32_t)VREFINT_MV * 4096 / adc);
+    return (uint16_t)((uint32_t)cal.vrefint_mv * 4096 / adc);
 }
 
 // Pack voltage with the battery mod: the 1N5817 Schottky sits between the pack
@@ -831,7 +832,9 @@ int16_t measure_mcu_temp(void) {
     // Multiply by 10 to keep integer precision: T*10 = (14300 - Vs*10) / 43 + 250
     int32_t vsense_x10 = (int32_t)vdda_mv * 10 * adc / 4096;
     int32_t temp_x10   = (V25REF_MV*10 - vsense_x10) * 10 / 43 + 250;
-    return (int16_t)((temp_x10 + 5) / 10);      // round to nearest °C
+    // Add the per-board offset (cal.temp_offset_c) to zero the sensor against a
+    // reference thermometer (`set temp.offset`, range -12..+12).
+    return (int16_t)((temp_x10 + 5) / 10) + cal.temp_offset_c;
 }
 
 // REQ (p=0): payload = [dest_hash][src_hash][MAC+AES(ts(4)+req_type(1)+fields)].
@@ -1396,8 +1399,11 @@ void cli_dfu(void) {
     digitalWrite(PIN_NRST, HIGH);    // ensure not held in reset
     delay(20);
     IWatchdog.set(IWDG_TIMEOUT_MAX); // watchdog won't interrupt our "DFU"
-    Serial1.println("OK - entering bootloader in 1s");
-    delay(1000);                        // let the reply drain through CH340
+    Serial1.println("Entering bootloader...");
+    Serial1.println("Close the Serial monitor and wait ~25s before upload");
+    delay(500);                         // let the reply drain through CH340
+    Serial1.write(0x04);                // EOF/EOT: some terminal tools close on this
+    delay(500);
     digitalWrite(DFU_BOOT0_PIN, HIGH);  // BOOT0=1 on the reset edge
     delay(20);
     digitalWrite(PIN_NRST, LOW);     // pulse NRST

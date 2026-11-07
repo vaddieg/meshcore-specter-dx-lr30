@@ -177,6 +177,24 @@ static int parse_int(const char* s, long* out) {
     return 0;
 }
 
+// Parse "N.NNN" (volts, up to 3 decimals) → mV. Returns 0 on success.
+// (newlib-nano has no float/strtod, so integer fixed point.)
+static int parse_mv(const char* s, uint32_t* out) {
+    uint32_t whole = 0, frac = 0;
+    int fd = 0;
+    if (*s == '.') s++;                                   // tolerate a leading dot
+    while (*s >= '0' && *s <= '9') whole = whole * 10 + (uint32_t)(*s++ - '0');
+    if (*s == '.') {
+        s++;
+        while (*s >= '0' && *s <= '9' && fd < 3) { frac = frac * 10 + (uint32_t)(*s++ - '0'); fd++; }
+        while (*s >= '0' && *s <= '9') s++;               // ignore decimals finer than mV
+    }
+    while (fd < 3) { frac *= 10; fd++; }                  // pad to mV
+    if (*s != '\0') return -1;                             // trailing garbage
+    *out = whole * 1000 + frac;
+    return 0;
+}
+
 // Parse "N.NNN" (1-6 decimals) → int32 micro-units (newlib-nano has no
 // float printf/scanf, so everything is done in integer fixed point)
 static int parse_micro(const char* s, int32_t* out) {
@@ -264,6 +282,49 @@ static void cmd_temp(void) {
     char buf[12];
     snprintf(buf, sizeof(buf), "%d°C", (int)t);
     out(buf);
+}
+// ─── Analog calibration (admin / local-serial only; see cmd_perm_needed) ─────
+// `battery.charged`: with a fully-charged pack (4.2 V), rescale VREFINT so the
+// current VDDA reading maps to (4.2 V - Schottky drop), then persist it.
+static void cmd_battery_charged(int argc, char** argv) {
+    // Optional full-charge reference voltage (volts). Default 4.2 V (a standard
+    // Li-Ion cell); some packs/cells top out lower (e.g. 4.1 V for longevity) —
+    // pass the real value so VREFINT is calibrated against the actual reference.
+    uint32_t ref_mv = LIION_CHARGED_MV;
+    if (argc >= 2) {
+        if (parse_mv(argv[1], &ref_mv) || ref_mv < 3500 || ref_mv > 4500) {
+            out("Err: usage: battery.charged [3.5-4.5]  (full-charge voltage, V)");
+            return;
+        }
+    }
+    uint16_t vdda = measure_vdda_mv();
+    if (vdda < 2000 || vdda > 5000) { out("Err: VDDA read out of range"); return; }
+    uint32_t newv = (uint32_t)cal.vrefint_mv * (ref_mv - SHOTTKY_DROP_MV) / vdda;
+    if (newv < 1000 || newv > 1400) { out("Err: calibrated VREFINT out of range"); return; }
+    cal.vrefint_mv = (uint16_t)newv;
+    prefs_save();
+    char buf[40];
+    snprintf(buf, sizeof(buf), "OK - vref=%u mV (ref %u.%03u V)", (unsigned)cal.vrefint_mv,
+             (unsigned)(ref_mv / 1000), (unsigned)(ref_mv % 1000));
+    out(buf);
+}
+static void get_battery_vref(void) { char b[8]; snprintf(b, sizeof(b), "%u", (unsigned)cal.vrefint_mv); getv(b); }
+static void set_battery_vref(int argc, char** argv) {
+    if (argc < 3) { out("Err: usage: set battery.vref <mV>"); return; }
+    long v;
+    if (parse_int(argv[2], &v) || v < 1000 || v > 1400) { out("Err: bad value (1000-1400 mV)"); return; }
+    cal.vrefint_mv = (uint16_t)v;
+    prefs_save();
+    out("OK");
+}
+static void get_temp_offset(void) { char b[8]; snprintf(b, sizeof(b), "%d", (int)cal.temp_offset_c); getv(b); }
+static void set_temp_offset(int argc, char** argv) {
+    if (argc < 3) { out("Err: usage: set temp.offset <-12..12>"); return; }
+    long v;
+    if (parse_int(argv[2], &v) || v < -12 || v > 12) { out("Err: bad value (-12..12 C)"); return; }
+    cal.temp_offset_c = (int16_t)v;
+    prefs_save();
+    out("OK");
 }
 static void cmd_board(void)     { out("DX-LR30"); }
 static void cmd_role(void)      { getv("repeater"); }
@@ -694,6 +755,7 @@ static void handle_line(char* raw) {
     // Single-word commands
     if (!strcmp(c, "ver") || !strcmp(c, "ver\n"))          { FINISH(cmd_ver()); }
     else if (!strcmp(c, "battery"))                         { FINISH(cmd_battery()); }
+    else if (!strcmp(c, "battery.charged"))                 { FINISH(cmd_battery_charged(argc, argv)); }
     else if (!strcmp(c, "temp"))                            { FINISH(cmd_temp()); }
     else if (!strcmp(c, "board"))                           { FINISH(cmd_board()); }
     else if (!strcmp(c, "role"))                            { FINISH(cmd_role()); }
@@ -763,6 +825,8 @@ static void handle_line(char* raw) {
         else if (!strcmp(g, "admin.password")) get_admin_password();
         else if (!strcmp(g, "guest.password")) get_guest_password();
         else if (!strcmp(g, "admin.timeout"))  get_admin_timeout();
+        else if (!strcmp(g, "battery.vref"))   get_battery_vref();
+        else if (!strcmp(g, "temp.offset"))    get_temp_offset();
         else { char ub[44]; snprintf(ub, sizeof(ub), "Err: unknown get '%s'", g); console_log(ub); out(ub); }
         done = true;
     }
@@ -795,6 +859,8 @@ static void handle_line(char* raw) {
         else if (!strcmp(s, "admin.password"))      set_admin_password(argc, argv);
         else if (!strcmp(s, "guest.password"))      set_guest_password(argc, argv);
         else if (!strcmp(s, "admin.timeout"))       set_admin_timeout(argc, argv);
+        else if (!strcmp(s, "battery.vref"))        set_battery_vref(argc, argv);
+        else if (!strcmp(s, "temp.offset"))         set_temp_offset(argc, argv);
         else { char ub[44]; snprintf(ub, sizeof(ub), "Err: unknown set '%s'", s); console_log(ub); out(ub); }
         done = true;
     }
