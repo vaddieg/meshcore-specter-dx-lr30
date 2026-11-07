@@ -2,6 +2,30 @@
 
 All notable changes to SPECTER firmware are documented here.
 
+## [1.15.2]
+
+### Telemetry request (REQ `0x03`) + `temp` command
+
+- **Telemetry request** (`REQ_TYPE_GET_TELEMETRY_DATA` = `0x03`): the app's
+  *Telemetry* button now gets a proper response. Reply = `[sender_ts(4)][CayenneLPP]`
+  carrying two points on channel 1 (`TELEM_CHANNEL_SELF`), matching the official
+  firmware's `addVoltage` + `addTemperature`:
+  - **voltage** — LPP type `0x74` (electroniccats/CayenneLPP 1.6.1), 2 bytes
+    big-endian, `mV / 10` (0.01 V units).
+  - **temperature** — LPP type `0x67`, 2 bytes big-endian, `°C × 10` (0.1 °C units).
+  Both are *base* telemetry, so they're **guest-readable** (like `get stats`).
+  Note: electroniccats encodes these as type `0x74`/`0x67` (0.01 V / 0.1 °C),
+  which differs from the myDevices LPP standard the app *also* understands —
+  SPECTER follows electroniccats because that's what the official firmware emits.
+- **`temp`** command (USB + mesh CLI): prints the MCU die temperature in whole
+  °C (e.g. `25°C`), from the internal ADC ch16 sensor (datasheet formula).
+  The ADC reading is scaled against the **clean VDDA** supply — the Schottky
+  drop is kept in a separate `measure_battery_mv()`, so it can't corrupt the
+  temperature. Integer formatting (newlib-nano has no float printf).
+
+Also in this unreleased set (committed separately): battery/supply voltage via
+the internal VREFINT (`battery` command + `RepeaterStats.batt_milli_volts`).
+
 ## [1.15.1]
 
 ### STOP mode + serial auto-sleep removed

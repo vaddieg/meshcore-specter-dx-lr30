@@ -101,4 +101,6 @@ void cli_set_rxgain(bool boosted);   // live setRxBoostedGainMode (no reboot)
 void cli_set_time(uint32_t epoch);
 uint32_t cli_now_epoch(void);
 const char* cli_version_str(void);
-uint16_t measure_vdda_mv(void);      // battery/supply voltage in mV (VREFINT)
+uint16_t measure_vdda_mv(void);      // clean analog supply (VDDA) in mV (VREFINT)
+uint16_t measure_battery_mv(void);   // pack voltage in mV = VDDA + Schottky drop
+int16_t  measure_mcu_temp(void);     // MCU die temperature in °C (internal sensor)

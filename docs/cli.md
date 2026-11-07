@@ -211,6 +211,8 @@ OK
 | `ver` | `1.4.0 (Oct 26 2026)` | firmware + build date |
 | `board` | `DX-LR30` | |
 | `get role` | `repeater` | |
+| `battery` | `3.888 V` | supply/battery voltage (mV) via internal VREFINT (ADC ch17), 3 decimals. With the battery mod this reads the pack (VDDA + Schottky drop) |
+| `temp` | `25°C` | MCU die temperature, whole °C (ADC ch16, VDDA-scaled, datasheet formula). Integer formatting (newlib-nano has no float printf) |
 | `get public.key` | 64 hex chars | Ed25519 pubkey |
 | `clock` | epoch seconds | advert timestamp base + uptime |
 | `time <epoch>` | `OK` | re-syncs advert clock (companions reject `\|now-ts\| > 3600 s`) |
@@ -338,6 +340,15 @@ over the mesh. Keep it ≤ 23 chars (longer is clipped to fit the field).
 packet counts, dup/recv-error counters) — guest-accessible. So with **no
 passwords set**, a companion can log in as a blank-password guest and read the
 Repeater Status; set an admin password for full control.
+
+**Telemetry:** the app's *Telemetry* button is a `REQ_TYPE_GET_TELEMETRY_DATA`
+(0x03) request. SPECTER answers with `[sender_ts(4)][CayenneLPP]` carrying two
+points on channel 1 (`TELEM_CHANNEL_SELF`): **voltage** (LPP type `0x74`,
+0.01 V units, `mV/10`) and **temperature** (LPP type `0x67`, 0.1 °C units,
+`°C×10`) — both *base* telemetry, so guest-readable. Encoded per
+electroniccats/CayenneLPP 1.6.1 (the library the official firmware compiles
+against), which numbers voltage/temperature `0x74`/`0x67` (0.01 V / 0.1 °C) —
+not the myDevices standard (`0x65`/`0x03`, 0.1 V / 0.01 °C).
 
 **Test it:** point a second radio running the official MeshCore companion
 firmware at SPECTER, log in with the admin password (or leave it blank for

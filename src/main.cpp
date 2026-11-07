@@ -31,7 +31,7 @@
 #include "acl.h"
 
 // ─── Version ─────────────────────────────────────────────────────────────────
-#define FW_VERSION "1.15.1"
+#define FW_VERSION "1.15.2"
 
 // ─── Mesh-admin payload types (matching MeshCore) ────────────────────────────
 #define PAYLOAD_TYPE_REQ        0x00   // Request (dest/src hashes + MAC)
@@ -716,7 +716,12 @@ static uint8_t cmd_perm_needed(const char* text) {
     return PERM_ADMIN;
 }
 
-// ─── Battery voltage (VDDA) via the internal VREFINT ─────────────────────────
+// The battery-mod 1N5817 Schottky diode drop, added on top of VDDA to recover
+// the pack voltage (see measure_battery_mv). Kept OUT of measure_vdda_mv() so
+// that function stays the clean analog-supply reading needed to scale the
+// internal temperature sensor (measure_mcu_temp).
+#define SHOTTKY_DROP_MV 240
+// ─── Supply voltage (VDDA) via the internal VREFINT ──────────────────────────
 // Measures the analog supply with NO external divider: the ADC reference IS
 // VDDA, so reading the fixed ~1.2 V internal VREFINT against it inverts to the
 // supply voltage. The battery sits on the 3V3 rail (board tolerates up to
@@ -729,6 +734,13 @@ static uint8_t cmd_perm_needed(const char* text) {
 // a known-good reference at the same charge state.) Re-calibrate per board if
 // accuracy matters (different chips → different VREFINT).
 #define VREFINT_MV 1180
+
+// Calibrated 25C ref voltage, needed for temperature measurement, default 1430 
+#define V25REF_MV 1385
+
+// measure_vdda_mv()  → the true analog supply (VDDA).
+// measure_battery_mv() → VDDA + SHOTTKY_DROP_MV (pack voltage with the mod).
+// measure_mcu_temp() → scales its ADC against the clean VDDA (not the battery).
 // The ADC is powered on only for the measurement (a few ms), then off again,
 // to keep idle current low.
 
@@ -763,8 +775,63 @@ uint16_t measure_vdda_mv(void) {
 
     ADC1->CR2 = 0;                             // power off (ADON + TSVREFE)
     if (adc == 0) return 0;
-    // VDDA (mV) = VREFINT_MV * 4096 / adc   (VREFINT_MV is board-calibrated)
+    // VDDA (mV) = VREFINT_MV * 4096 / adc   (VREFINT_MV is board-calibrated).
+    // This is the clean analog supply — the battery-mod Schottky drop is NOT
+    // added here (see measure_battery_mv), so it's safe to scale the temp sensor.
     return (uint16_t)((uint32_t)VREFINT_MV * 4096 / adc);
+}
+
+// Pack voltage with the battery mod: the 1N5817 Schottky sits between the pack
+// and the 3V3 rail, so the true pack voltage is VDDA + the diode drop.
+uint16_t measure_battery_mv(void) {
+    uint16_t vdda = measure_vdda_mv();
+    return vdda + SHOTTKY_DROP_MV;
+}
+
+// Reads the internal temperature sensor (ADC ch 16).  Uses the just-measured
+// VDDA (from measure_vdda_mv) to convert the raw ADC value to voltage, then
+// applies the datasheet formula:
+//     T (°C) = (V25 - Vsense) / Avg_Slope + 25
+// with V25 = 1.43 V and Avg_Slope = 4.3 mV/°C (STM32F103 datasheet §5.3.22).
+// Returns temperature in whole degrees Celsius.
+int16_t measure_mcu_temp(void) {
+    uint16_t vdda_mv = measure_vdda_mv();       // need VDDA to scale the ADC
+    if (vdda_mv == 0) return -127;              // VDDA measurement failed
+
+    RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;
+    ADC1->CR2 = 0;
+    ADC1->CR1 = 0;
+    ADC1->CR2 = ADC_CR2_TSVREFE
+              | ADC_CR2_EXTSEL
+              | ADC_CR2_EXTTRIG
+              | ADC_CR2_ADON;
+    delay(2);                                   // tSTAB
+
+    // Ch 16 = temperature sensor; 239.5-cycle sample time (≥17.1 µs required)
+    ADC1->SMPR1 = (ADC1->SMPR1 & ~ADC_SMPR1_SMP16) | ADC_SMPR1_SMP16;
+    ADC1->SQR3 = 16;
+    ADC1->SQR2 = 0;
+    ADC1->SQR1 = 0;
+
+    // Discard first conversion after power-on.
+    ADC1->CR2 |= ADC_CR2_SWSTART;
+    for (int i = 0; i < 100000 && !(ADC1->SR & ADC_SR_EOC); i++) {}
+    (void)ADC1->DR;
+
+    // Actual conversion.
+    ADC1->CR2 |= ADC_CR2_SWSTART;
+    for (int i = 0; i < 100000 && !(ADC1->SR & ADC_SR_EOC); i++) {}
+    uint16_t adc = ADC1->DR;
+
+    ADC1->CR2 = 0;                              // power off
+    if (adc == 0) return -127;
+
+    // Vsense (mV) = vdda_mv * adc / 4096
+    // T = (1430 - Vsense) / 4.3 + 25   (all in mV, slope 4.3 mV/°C)
+    // Multiply by 10 to keep integer precision: T*10 = (14300 - Vs*10) / 43 + 250
+    int32_t vsense_x10 = (int32_t)vdda_mv * 10 * adc / 4096;
+    int32_t temp_x10   = (V25REF_MV*10 - vsense_x10) * 10 / 43 + 250;
+    return (int16_t)((temp_x10 + 5) / 10);      // round to nearest °C
 }
 
 // REQ (p=0): payload = [dest_hash][src_hash][MAC+AES(ts(4)+req_type(1)+fields)].
@@ -792,7 +859,7 @@ static bool handle_req(const uint8_t* pl, int plen) {
         // the correlation tag, then the stats (guest-accessible).
         memcpy(resp, data, 4);
         RepeaterStats s;
-        s.batt_milli_volts       = measure_vdda_mv(); // VDDA ≈ battery (mV)
+        s.batt_milli_volts       = measure_battery_mv(); // pack voltage (mV)
         s.curr_tx_queue_len      = 0;                 // no TX queue
         s.noise_floor            = stat_noise_floor;
         s.last_rssi              = stat_last_rssi;
@@ -812,6 +879,35 @@ static bool handle_req(const uint8_t* pl, int plen) {
         s.n_recv_errors          = stat_recv_errors;
         memcpy(resp + 4, &s, sizeof(s));
         send_admin_reply(PAYLOAD_TYPE_RESPONSE, &e->pub[0], e->secret, resp, 4 + sizeof(s));
+        e->last_activity_ms = millis();
+        if (their_ts > e->last_ts) e->last_ts = their_ts;
+        return true;
+    }
+    if (req_type == REQ_GET_TELEMETRY) {
+        // Reply = [their_ts(4)][CayenneLPP]. LPP (electroniccats/CayenneLPP 1.6.1):
+        //   voltage point:    [ch=1][0x74][int16_be(mV/10)]  (0.01 V, signed)
+        //   temperature point: [ch=1][0x67][int16_be(C*10)]   (0.1  C, signed)
+        // Channel 1 = TELEM_CHANNEL_SELF. Both are 'base' telemetry → guest-readable,
+        // matching the official firmware (which adds voltage + MCU temp on channel 1).
+        int16_t batt_mv = (int16_t)measure_battery_mv();
+        int16_t temp_c  = (int16_t)measure_mcu_temp();
+        static uint8_t lpp[8];
+        int p = 0;
+        int16_t vraw = batt_mv / 10;        // volts*100 == mV/10
+        lpp[p++] = 1;                        // TELEM_CHANNEL_SELF
+        lpp[p++] = 0x74;                     // LPP_VOLTAGE
+        lpp[p++] = (uint8_t)((vraw >> 8) & 0xFF);
+        lpp[p++] = (uint8_t)(vraw & 0xFF);
+        if (temp_c > -127) {                 // skip the point if the sensor failed
+            int16_t traw = temp_c * 10;      // C*10
+            lpp[p++] = 1;
+            lpp[p++] = 0x67;                 // LPP_TEMPERATURE
+            lpp[p++] = (uint8_t)((traw >> 8) & 0xFF);
+            lpp[p++] = (uint8_t)(traw & 0xFF);
+        }
+        memcpy(resp, data, 4);               // reflect the request ts as the tag
+        memcpy(resp + 4, lpp, p);
+        send_admin_reply(PAYLOAD_TYPE_RESPONSE, &e->pub[0], e->secret, resp, 4 + p);
         e->last_activity_ms = millis();
         if (their_ts > e->last_ts) e->last_ts = their_ts;
         return true;
@@ -1299,14 +1395,13 @@ void cli_dfu(void) {
     pinMode(PIN_NRST,   OUTPUT);
     digitalWrite(PIN_NRST, HIGH);    // ensure not held in reset
     delay(20);
+    IWatchdog.set(IWDG_TIMEOUT_MAX); // watchdog won't interrupt our "DFU"
     Serial1.println("OK - entering bootloader in 1s");
     delay(1000);                        // let the reply drain through CH340
     digitalWrite(DFU_BOOT0_PIN, HIGH);  // BOOT0=1 on the reset edge
     delay(20);
     digitalWrite(PIN_NRST, LOW);     // pulse NRST
-    delay(100);
-    IWatchdog.set(IWDG_TIMEOUT_MAX); //
-    digitalWrite(PIN_NRST, HIGH);    // release → reset with BOOT0 high
+    
     while (true) { delay(10); }         // (unreachable; bootloader takes over)
 }
 #endif

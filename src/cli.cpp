@@ -249,12 +249,20 @@ void neighbor_add(const uint8_t* pubkey32, uint32_t ts, int8_t snr_x4) {
 
 // ─── Command dispatch ───────────────────────────────────────────────────────
 static void cmd_ver(void)       { out(cli_version_str()); }
-// Battery/supply voltage (VDDA via VREFINT), shown as volts to 3 decimals using
-// integer arithmetic (newlib-nano has no float printf).
+// Pack/supply voltage (VDDA via VREFINT + Schottky drop), shown as volts to
+// 3 decimals using integer arithmetic (newlib-nano has no float printf).
 static void cmd_battery(void) {
-    uint16_t mv = measure_vdda_mv();
+    uint16_t mv = measure_battery_mv();
     char buf[16];
     snprintf(buf, sizeof(buf), "%u.%03u V", (unsigned)(mv / 1000), (unsigned)(mv % 1000));
+    out(buf);
+}
+// MCU internal temperature (ADC ch16, VDDA-scaled), whole degrees Celsius.
+static void cmd_temp(void) {
+    int16_t t = measure_mcu_temp();
+    if (t <= -127) { out("Err: temp sensor read failed"); return; }
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%d°C", (int)t);
     out(buf);
 }
 static void cmd_board(void)     { out("DX-LR30"); }
@@ -686,6 +694,7 @@ static void handle_line(char* raw) {
     // Single-word commands
     if (!strcmp(c, "ver") || !strcmp(c, "ver\n"))          { FINISH(cmd_ver()); }
     else if (!strcmp(c, "battery"))                         { FINISH(cmd_battery()); }
+    else if (!strcmp(c, "temp"))                            { FINISH(cmd_temp()); }
     else if (!strcmp(c, "board"))                           { FINISH(cmd_board()); }
     else if (!strcmp(c, "role"))                            { FINISH(cmd_role()); }
     else if (!strcmp(c, "reboot"))                          { cmd_reboot(); }

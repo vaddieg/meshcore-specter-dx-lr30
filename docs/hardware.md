@@ -106,7 +106,41 @@ see [flashing.md, Headless flashing: SWD](flashing.md#headless-flashing-swd-reco
 | USB-C | 5V | Via CH340 onboard regulator → 3.3V |
 | Min current | ~0.5 mA | Idle, radio in RX |
 | Peak current | ~150 mA | During LoRa TX burst |
-The board can be powered from a Li-ion battery, TODO: identify safe pins
+
+### Battery mod (Li-Ion + solar)
+
+The board has **no battery pads** and VBAT is disconnected, so there is no
+first-class way to run it from a cell. The cheap fix is a **TP4056** Li-Ion
+charger module feeding the 3V3 rail through a Schottky diode, with a solar
+panel keeping the cell topped up. See [solar.md](solar.md) for the full design
+rationale and a "hardcore" AMS1117-swap variant.
+
+![Battery mod — Recommended way](battery-mod.svg)
+
+*Recommended-way wiring (matches the diagram):*
+
+| From | To |
+|------|----|
+| Solar panel `+` | TP4056 `IN+` |
+| Solar panel `−` | TP4056 `IN−` |
+| 18650 cell `+`  | TP4056 `BAT+` |
+| 18650 cell `−`  | TP4056 `BAT−` |
+| TP4056 `OUT+`   | 1N5817 anode |
+| 1N5817 cathode  | DX-LR30 `3V3` |
+| TP4056 `OUT−`   | DX-LR30 `GND` |
+
+**Components:** a 18650 (or vape) cell, a TP4056 module, a 1N5817 Schottky
+diode (0.5–1.0 A), and a ~5 V / 2 W solar panel.
+
+> The TP4056 passes the cell voltage straight through to `OUT+` (it does **not**
+> regulate), so the 3V3 rail runs at cell voltage minus the Schottky drop
+> (~0.35 V) → roughly **3.0–3.85 V**, within the F103's 4.0 V VCC max. The
+> firmware reads this rail via the internal VREFINT ADC — the `battery` CLI
+> command and the `batt_milli_volts` field in `get stats` (REQ 0x01) both
+> report it, so the app's Repeater Status shows the pack voltage.
+
+The generator for the diagram is [gen_battery_mod.py](gen_battery_mod.py) (needs
+`schemdraw[matplotlib]`, not a project dependency).
 
 ---
 

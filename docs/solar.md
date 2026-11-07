@@ -20,7 +20,13 @@ There're plenty of instructions for USB-powered boards. Little to no soldering s
 - TP4056 charging module
 - a Shottky diode, rated for 0.5-1.0A e.g. 1N5817
 - a 2W 5V solar panel
-
+Interconnections:
+TP4056 OUT- is connected to DX-LR30 GND
+TP4056 OUT+ is connected to 1N5817 anode
+1N5817 catode is connected to DX-LR30 3V3 line
+Solar panel(-) to TP4056 IN-
+Solar panel(+) to TP4056 IN+
+18650 cell is connected to TP4056 BAT- and BAT+ terminals
 
 ## Hardcore mod
 > Advanced soldering skills required, otherwise risk of damaging the board is high!
