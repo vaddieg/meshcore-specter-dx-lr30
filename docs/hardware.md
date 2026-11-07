@@ -28,9 +28,11 @@ flowchart LR
 Physical board inspection revealed a serious mismatch with the provided schematic diagram: BOOT0 is not
 connected to RTS of CH340E, DTR isn't connected too, which makes software DFU over USB impossible.
 Additional findings:
-- VBAT disconnected, it's an official path for battery metrics
-- STM32F103xx chip has LQFP48 packaging (48 pins) 
-- AMS1117-3.3 voltage regulator with 1.1V dropout
+- VBAT disconnected, no RTC backup 
+- STM32F103xx chip has LQFP48 packaging (48 pins)
+- supply voltage can be measured over VDDA, but there's no factory VREFINT calibration in flash.
+- the STM32F103 has a built-in temperature sensor connected to ADC channel 16. Temperature (°C) = (V₂₅ - V_sense) / Avg_Slope + 25
+- AMS1117-3.3 voltage regulator with 1.1V dropout (too high, can't use with battery)
 - The KEY button connected to PB12 which has no effect on entering the bootloader mode.
 
 
@@ -117,7 +119,7 @@ rationale and a "hardcore" AMS1117-swap variant.
 
 ![Battery mod — Recommended way](battery-mod.svg)
 
-*Recommended-way wiring (matches the diagram):*
+*Recommended-way wiring:*
 
 | From | To |
 |------|----|

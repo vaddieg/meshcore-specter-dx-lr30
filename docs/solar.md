@@ -30,9 +30,12 @@ Solar panel(+) to TP4056 IN+
 
 ## Hardcore mod
 > Advanced soldering skills required, otherwise risk of damaging the board is high!
+Pros: the battery can be charged over the USB, 5V solar panel can be plugged into USB as well
+Cons: unstable start, can't be programmed anymore if the battery is disconnected or depleted
+
 - Desolder AMS1117
 - Solder TP4056 IN+ to the pad where AMS1117's input was 
-- Solder TP4056 OUT+ to the pad where AMS1117's output was (optionally via Shottky)
+- Solder TP4056 OUT+ to the pad where AMS1117's output was (via Shottky)
 - Solder TP4056 OUT- to the pad where AMS1117's GND was
 
 Since TP4056 doesn't actually stabilize the output voltage, the board modded in 'hardcore' way
