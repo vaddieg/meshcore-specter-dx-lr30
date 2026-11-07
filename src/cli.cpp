@@ -249,6 +249,14 @@ void neighbor_add(const uint8_t* pubkey32, uint32_t ts, int8_t snr_x4) {
 
 // ─── Command dispatch ───────────────────────────────────────────────────────
 static void cmd_ver(void)       { out(cli_version_str()); }
+// Battery/supply voltage (VDDA via VREFINT), shown as volts to 3 decimals using
+// integer arithmetic (newlib-nano has no float printf).
+static void cmd_battery(void) {
+    uint16_t mv = measure_vdda_mv();
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%u.%03u V", (unsigned)(mv / 1000), (unsigned)(mv % 1000));
+    out(buf);
+}
 static void cmd_board(void)     { out("DX-LR30"); }
 static void cmd_role(void)      { getv("repeater"); }
 static void cmd_reboot(void)    { cli_reboot(); }
@@ -677,6 +685,7 @@ static void handle_line(char* raw) {
 
     // Single-word commands
     if (!strcmp(c, "ver") || !strcmp(c, "ver\n"))          { FINISH(cmd_ver()); }
+    else if (!strcmp(c, "battery"))                         { FINISH(cmd_battery()); }
     else if (!strcmp(c, "board"))                           { FINISH(cmd_board()); }
     else if (!strcmp(c, "role"))                            { FINISH(cmd_role()); }
     else if (!strcmp(c, "reboot"))                          { cmd_reboot(); }

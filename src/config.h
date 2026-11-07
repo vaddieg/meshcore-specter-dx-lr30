@@ -101,3 +101,4 @@ void cli_set_rxgain(bool boosted);   // live setRxBoostedGainMode (no reboot)
 void cli_set_time(uint32_t epoch);
 uint32_t cli_now_epoch(void);
 const char* cli_version_str(void);
+uint16_t measure_vdda_mv(void);      // battery/supply voltage in mV (VREFINT)

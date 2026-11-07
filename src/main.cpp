@@ -537,7 +537,7 @@ static bool send_pkt(const uint8_t* buf, int len, bool flood_relay) {
         uint32_t backoff = rng_range(5) * t;                    // 0..4t ≈ 0..2×airtime
         if (backoff > 0) delay(backoff);
     } else {
-        delay(10);   // brief RF-switch settle
+        delay(1);   // brief RF-switch settle
     }
 
     // Token bucket: ensure the budget covers this TX before transmitting
@@ -707,12 +707,69 @@ static uint8_t cmd_perm_needed(const char* text) {
     if (!strncmp(text, "clock", 5))     return PERM_READ;
     if (!strncmp(text, "time", 4))      return PERM_READ;
     if (!strncmp(text, "stats", 5))     return PERM_READ;
+    if (!strncmp(text, "battery", 7))   return PERM_READ;
     if (!strncmp(text, "neighbors", 9)) return PERM_READ;
     if (!strncmp(text, "log", 3))       return PERM_READ;
     if (!strncmp(text, "acl", 3))       return PERM_READ;
     if (!strncmp(text, "set", 3))       return PERM_READWRITE;
     // reboot / erase / dfu and anything unrecognized require full admin
     return PERM_ADMIN;
+}
+
+// ─── Battery voltage (VDDA) via the internal VREFINT calibration ─────────────
+// Measures the analog supply with NO external divider: the ADC reference IS
+// VDDA, so reading the fixed ~1.20 V internal VREFINT against it inverts to
+// the supply voltage. The battery sits on the 3V3 rail (board tolerates up to
+// 4 V VCC), so VDDA ≈ battery voltage with no over-range risk:
+//     VDDA = 1200 mV * 4096 / VREFINT_ADC
+// The STM32F103 has NO factory VREFINT calibration value in flash, so we use
+// the nominal 1.20 V from the datasheet (min 1.16, max 1.24 V).
+// The ADC is powered on only for the measurement (a few ms), then off again,
+// to keep idle current low.
+
+uint16_t measure_vdda_mv(void) {
+    //dlog("VREF: enter");
+    // Configure ADC1 for a single conversion of the internal VREFINT (ch 17).
+    RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;        // ADC1 interface clock
+    //dlog("VREF: clk apb2=0x%08lX", (unsigned long)RCC->APB2ENR);
+    ADC1->CR2 = 0;                             // reset control (ADC off)
+    ADC1->CR1 = 0;
+    //dlog("VREF: cr reset");
+    // VREFINT/temp-sensor path + EXTSEL=SWSTART(111) + EXTTRIG + power on
+    ADC1->CR2 = ADC_CR2_TSVREFE
+              | ADC_CR2_EXTSEL                  // EXTSEL = 0b111 = SWSTART
+              | ADC_CR2_EXTTRIG                 // enable external/sw trigger
+              | ADC_CR2_ADON;                   // power on
+    //dlog("VREF: adc on cr2=0x%08lX", (unsigned long)ADC1->CR2);
+    delay(2);                                  // tSTAB / power-up settle
+    //dlog("VREF: post-delay");
+
+    ADC1->SMPR1 = (ADC1->SMPR1 & ~ADC_SMPR1_SMP17) | ADC_SMPR1_SMP17; // 247.5 cyc
+    ADC1->SQR3 = 17;                           // rank 1 = VREFINT (ch 17)
+    ADC1->SQR2 = 0;
+    ADC1->SQR1 = 0;                            // scan length = 1
+    //dlog("VREF: seq set");
+
+    // First conversion after power-on is invalid → discard.
+    ADC1->CR2 |= ADC_CR2_SWSTART;
+    //dlog("VREF: dummy go");
+    for (int i = 0; i < 100000 && !(ADC1->SR & ADC_SR_EOC); i++) {}
+    //dlog("VREF: dummy eoc=%u", (unsigned)((ADC1->SR & ADC_SR_EOC)?1:0));
+    (void)ADC1->DR;
+
+    // Actual conversion (bounded wait so a stuck ADC can't hang the loop).
+    ADC1->CR2 |= ADC_CR2_SWSTART;
+    //dlog("VREF: actual go");
+    for (int i = 0; i < 100000 && !(ADC1->SR & ADC_SR_EOC); i++) {}
+    //bool eoc = (ADC1->SR & ADC_SR_EOC) ? true : false;
+    uint16_t adc = ADC1->DR;
+
+    ADC1->CR2 = 0;                             // power off (ADON + TSVREFE)
+    //dlog("VREF: done adc=%u eoc=%u", (unsigned)adc,
+    //     (unsigned)((ADC1->SR & ADC_SR_EOC)?1:0));
+    if (adc == 0) return 0;
+    // VDDA (mV) = 1200 * 4096 / adc   (nominal VREFINT = 1.20 V)
+    return (uint16_t)((uint32_t)1200 * 4096 / adc);
 }
 
 // REQ (p=0): payload = [dest_hash][src_hash][MAC+AES(ts(4)+req_type(1)+fields)].
@@ -740,7 +797,7 @@ static bool handle_req(const uint8_t* pl, int plen) {
         // the correlation tag, then the stats (guest-accessible).
         memcpy(resp, data, 4);
         RepeaterStats s;
-        s.batt_milli_volts       = 0;                 // no battery
+        s.batt_milli_volts       = measure_vdda_mv(); // VDDA ≈ battery (mV)
         s.curr_tx_queue_len      = 0;                 // no TX queue
         s.noise_floor            = stat_noise_floor;
         s.last_rssi              = stat_last_rssi;
@@ -1085,6 +1142,7 @@ extern "C" void SystemClock_Config(void) {
 // Gate clock to unused peripherals and power-down ADC converters initialized by
 // Arduino core defaults, saving unnecessary idle current.
 static void peripherals_disable_unused(void) {
+    return;
     // 1. Power down and gate off ADCs if active
 #if defined(ADC1)
     if (ADC1->CR2 & ADC_CR2_ADON) {
@@ -1151,7 +1209,7 @@ void setup(void) {
     // Boot signature: 5 quick flashes so a successful *app* boot is easy to tell
     // apart from the ROM bootloader (which shows a SOLID LED). Fires before radio
     // init, so you get it even if the radio later comes up in degraded mode.
-    led_blink(5, 70);
+    led_blink(5, 50);
     digitalWrite(PIN_LED, LED_OFF);
 
     // RF switch pins
@@ -1309,7 +1367,7 @@ void loop(void) {
     // ── LED heartbeat every 10 s ─────────────────────────────────────────────
     if (now - last_beat_ms >= 10000UL) {
         last_beat_ms = now;
-        led_blink(1, 80);   // heartbeat blink every 10 s
+        led_blink(1, 50);   // heartbeat blink every 10 s
     }
     // ── ALIVE log line every 60 s (keeps the remote log ring uncluttered) ─────
     if (now - last_alive_ms >= 60000UL) {
@@ -1440,11 +1498,11 @@ void loop(void) {
                 uint8_t route = rxbuf[0] & 0x03;
                 if (route == ROUTE_DIRECT || route == ROUTE_TRANSPORT_DIRECT) stat_recv_direct++;
                 else                                                          stat_recv_flood++;
-                led_blink(1, 40);         // 1 blink = pkt received
+                led_blink(1, 20);         // 1 blink = pkt received
                 rf_idle();
                 if (process_pkt(rxbuf, rxlen)) {
                     stat_relay++;
-                    led_blink(2, 30);     // 2 fast blinks = relay OK
+                    led_blink(2, 20);     // 2 fast blinks = relay OK
                     send_pkt(relay_buf, relay_len, relay_is_flood);
                 } else {
                     stat_drop++;
