@@ -8,8 +8,8 @@
 
 ## Features
 - Runs on a $5 hardware
-- Consumes 8mA on battery, good for DIY solar nodes
-- Supports the most of the official firmware functions
+- Consumes 8mA on battery
+- Supports the most of the official functions
 - CLI over the Serial or over the Mesh
 - Solar node-ready (Telemetry, battery, solar cell connection)
 
