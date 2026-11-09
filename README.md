@@ -67,7 +67,7 @@ st-flash write .pio/build/specter/firmware.bin 0x08000000
 ### Over USB, if you managed to upload Specter 1.15.1+ at least once
 1. Connect to the Serial Monitor
 ```bash
-pio run -e specter -t upload
+pio run -e specter -t monitor
 ```
 2. Type `dfu` and hit enter
 3. Ctrl-C to interrupt the monitor and wait ~25 seconds
