@@ -2,7 +2,7 @@
 
 All notable changes to SPECTER firmware are documented here.
 
-## [Unreleased]
+## [1.15.3]
 
 ### Analog calibration CLI (VREFINT + temperature offset)
 
@@ -52,7 +52,7 @@ Also:
   drop is kept in a separate `measure_battery_mv()`, so it can't corrupt the
   temperature. Integer formatting (newlib-nano has no float printf).
 
-Also in this unreleased set (committed separately): battery/supply voltage via
+Also included: battery/supply voltage via
 the internal VREFINT (`battery` command + `RepeaterStats.batt_milli_volts`).
 
 ## [1.15.1]

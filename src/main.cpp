@@ -31,7 +31,7 @@
 #include "acl.h"
 
 // ─── Version ─────────────────────────────────────────────────────────────────
-#define FW_VERSION "1.15.2"
+#define FW_VERSION "1.15.3"
 
 // ─── Mesh-admin payload types (matching MeshCore) ────────────────────────────
 #define PAYLOAD_TYPE_REQ        0x00   // Request (dest/src hashes + MAC)

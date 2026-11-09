@@ -13,6 +13,27 @@
 - CLI over the Serial or over the Mesh
 - Solar node-ready (Telemetry, battery, solar cell connection)
 
+## Versioning
+
+SPECTER reports its version as **1.15.x** (e.g. `1.15.3`). That's deliberate, not a
+coincidence:
+
+- **Why 1.15.x.** The official tooling — `config.meshcore.io` (web configurator) and
+  `app.meshcore.nz` — detects features from the version the firmware reports back
+  (a `varMinVersion` check). Reporting a version in the official **1.15.x** band makes
+  those tools treat SPECTER as a 1.15.x device and enable the matching features
+  (Repeater Status, telemetry, remote management, …).
+- **The patch number is SPECTER's own.** `1.15.3` is SPECTER's third release on the
+  1.15 line — it does **not** correspond to the official MeshCore firmware's `1.15.3`.
+  SPECTER and the official firmware just share the `1.15.` prefix.
+- **Keep it `< 1.16.0`.** The tooling's feature gates are written against the 1.15.x
+  API. Bumping to 1.16.0+ could make the app expect features SPECTER doesn't implement
+  (or reject it). So SPECTER stays on the 1.15 line: `1.15.0`, `1.15.1`, `1.15.2`,
+  `1.15.3`, …
+
+In short: SPECTER is a companion that speaks the official wire protocol and borrows
+the official 1.15.x version band so the stock tools work with it.
+
 ## Getting started
 There are two options to go:
 
