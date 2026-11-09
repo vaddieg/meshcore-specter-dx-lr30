@@ -5,6 +5,17 @@ that are not obvious from datasheets or library documentation.
 
 ---
 
+## Version number — stay on 1.15.x
+
+`FW_VERSION` must stay in the **1.15.x** band (`< 1.16.0`). The official tooling
+(`config.meshcore.io`, `app.meshcore.nz`) gates features on the version the firmware
+reports back (`varMinVersion`), so reporting 1.15.x makes them treat SPECTER as a
+stock 1.15.x device. The patch number (`1.15.3`) is SPECTER's own release counter —
+it does **not** track the official firmware's releases. Going to 1.16.0+ risks the
+app expecting features we don't implement.
+
+---
+
 ## STM32 Bootloader Baud Rate
 
 The DX-LR30's STM32F103 ROM bootloader listens at **115200 8E1** (8 data
