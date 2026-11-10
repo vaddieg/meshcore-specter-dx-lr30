@@ -106,8 +106,20 @@ see [flashing.md, Headless flashing: SWD](flashing.md#headless-flashing-swd-reco
 | Source | Voltage | Notes |
 |--------|---------|-------|
 | USB-C | 5V | Via CH340 onboard regulator → 3.3V |
-| Min current | ~0.5 mA | Idle, radio in RX |
+| Min current | ~8–15 mA | Idle, radio in RX, 8 MHz HSI (measured on battery) |
 | Peak current | ~150 mA | During LoRa TX burst |
+
+### Power optimizations (measured)
+
+The baseline above is dominated by the SX1262 sitting in RX. Measured on battery:
+
+| Mod | Saving | Verdict |
+|-----|--------|---------|
+| Remove the **red PWR LED** (de-solder) | **~2.1 mA** | ✅ Worth it — just de-solder it |
+| Serial auto-sleep (drop USART1 after idle) | **~0.12 mA** | ❌ Not worth it — reverted (dropped-first-byte-after-wake snag; see `src/cli.cpp`) |
+
+> Rule of thumb: the LED is the cheap, obvious win. Fiddling with the serial
+> peripheral saves a fraction of a milliamp and costs CLI flakiness — not worth it.
 
 ### Battery mod (Li-Ion + solar)
 
