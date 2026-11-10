@@ -1014,6 +1014,21 @@ static bool handle_txt_msg(const uint8_t* pl, int plen) {
     return true;
 }
 
+// True if our full hash (own_pubkey[0..hash_size-1]) appears anywhere in the
+// path. Compares all hash_size bytes per hop — not just the first — so a
+// 2/3-byte path can't false-positive on a first-byte collision with another
+// node (matches the official's full-hash loop check).
+static bool path_contains_own(const uint8_t* path, int hops, uint8_t hash_size) {
+    for (int j = 0; j < hops; j++) {
+        const uint8_t* e = path + (size_t)j * hash_size;
+        bool m = true;
+        for (int k = 0; k < hash_size; k++)
+            if (e[k] != own_pubkey[k]) { m = false; break; }
+        if (m) return true;
+    }
+    return false;
+}
+
 static bool process_pkt(const uint8_t* data, int len) {
     relay_is_flood = false;   // reset; set true only on the flood-relay return
     if (len < 3) { dlog("Drop: malformed"); return false; }
@@ -1089,21 +1104,19 @@ static bool process_pkt(const uint8_t* data, int len) {
     // Re-transmit packet UNCHANGED if our hash appears anywhere in the path.
     // (MeshCore reference: repeater.py _handle_direct)
     if (route == ROUTE_DIRECT || route == ROUTE_TRANSPORT_DIRECT) {
-        for (int j = 0; j < hop_count; j++) {
-            if (path_ptr[j * hash_size] == own_hash) {
-                if (len > MAX_PKT) return false;
-                relay_len = len;
-                memcpy(relay_buf, data, len);
+        if (path_contains_own(path_ptr, hop_count, hash_size)) {
+            if (len > MAX_PKT) return false;
+            relay_len = len;
+            memcpy(relay_buf, data, len);
 
-                if (dedup_seen(relay_buf, ptype, (uint8_t)relay_len)) {
-                    stat_direct_dups++;
-                    dlog("Drop dedup");
-                    return false;
-                }
-
-                dlog("Relay direct");
-                return true;   // relay_is_flood stays false → no backoff
+            if (dedup_seen(relay_buf, ptype, (uint8_t)relay_len)) {
+                stat_direct_dups++;
+                dlog("Drop dedup");
+                return false;
             }
+
+            dlog("Relay direct");
+            return true;   // relay_is_flood stays false → no backoff
         }
         if ((ptype == PAYLOAD_TYPE_TRACE) && (own_hash == data[len-1])) {  // PING packet
             if ((payload_len != 10)) return false; // Is it fixed length?
@@ -1168,17 +1181,14 @@ static bool process_pkt(const uint8_t* data, int len) {
     }
 
     // Loop detection (off = skip; minimal/moderate/strict all drop when our
-    // hash appears in the path — 1-byte hashes make finer levels equivalent)
-    if (cfg.loop_detect != 0) {
-        for (int j = 0; j < hop_count; j++) {
-            if (path_ptr[j * hash_size] == own_hash) {
-                dlog("Drop loop");
-#ifdef SP_DUMP_PAYLOAD                
-                hex_dump(payload_ptr, payload_len, 24);
-#endif                
-                return false;
-            }
-        }
+    // full hash appears in the path — compared across all hash_size bytes so
+    // multi-byte paths don't false-positive on a first-byte collision)
+    if (cfg.loop_detect != 0 && path_contains_own(path_ptr, hop_count, hash_size)) {
+        dlog("Drop loop");
+#ifdef SP_DUMP_PAYLOAD
+        hex_dump(payload_ptr, payload_len, 24);
+#endif
+        return false;
     }
 
     // Build relay packet
