@@ -745,95 +745,101 @@ static uint8_t cmd_perm_needed(const char* text) {
 // The ADC is powered on only for the measurement (a few ms), then off again,
 // to keep idle current low.
 
-uint16_t measure_vdda_mv(void) {
-    // Configure ADC1 for a single conversion of the internal VREFINT (ch 17).
-    RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;        // ADC1 interface clock
-    ADC1->CR2 = 0;                             // reset control (ADC off)
-    ADC1->CR1 = 0;
-    // VREFINT path + EXTSEL=SWSTART(0b111) + EXTTRIG + power on. EXTSEL/EXTTRIG
-    // must select the software trigger, otherwise the SWSTART write below is a
-    // no-op, EOC never sets, and DR reads 0.
-    ADC1->CR2 = ADC_CR2_TSVREFE
-              | ADC_CR2_EXTSEL                  // EXTSEL = 0b111 = SWSTART
-              | ADC_CR2_EXTTRIG                 // enable sw trigger
-              | ADC_CR2_ADON;                   // power on
-    delay(2);                                  // tSTAB / power-up settle
+// ---- Combined VREFINT (ch17) + temp-sensor (ch16) sampling ------------------
+// Both channels are read in a SINGLE ADC power-on cycle, averaged over
+// ADC_SAMPLES readings to smooth sampling noise, and cached with a timestamp.
+// The metrics below derive from the cache and refresh it only if it's older
+// than ADC_MAX_AGE_MS — so a battery+temp read is ONE ADC cycle (not the old
+// 2-3), and repeated reads within the window share the same sample.
 
-    ADC1->SMPR1 = (ADC1->SMPR1 & ~ADC_SMPR1_SMP17) | ADC_SMPR1_SMP17; // 247.5 cyc
-    ADC1->SQR3 = 17;                           // rank 1 = VREFINT (ch 17)
-    ADC1->SQR2 = 0;
-    ADC1->SQR1 = 0;                            // scan length = 1
+#define ADC_SAMPLES     8                          // per-channel average (4-8)
+#define ADC_MAX_AGE_MS  (60UL * 1000UL)             // refresh the sample if older (1 min)
 
-    // First conversion after power-on is invalid → discard.
+typedef struct {
+    uint16_t vref_raw;   // averaged ch17 (0-4095)
+    uint16_t temp_raw;   // averaged ch16 (0-4095)
+    uint32_t ts_ms;      // millis() at sample time
+    bool     valid;      // true once sampled
+} adc_cache_t;
+
+static adc_cache_t s_adc;
+
+// Read one channel (single-rank sequence; rank set per call). Reading DR clears
+// EOC. Bounded wait so a stuck ADC can't hang the loop.
+static uint16_t adc_read_ch(uint8_t ch) {
+    ADC1->SQR3 = ch;
     ADC1->CR2 |= ADC_CR2_SWSTART;
     for (int i = 0; i < 100000 && !(ADC1->SR & ADC_SR_EOC); i++) {}
-    (void)ADC1->DR;
-
-    // Actual conversion (bounded wait so a stuck ADC can't hang the loop).
-    ADC1->CR2 |= ADC_CR2_SWSTART;
-    for (int i = 0; i < 100000 && !(ADC1->SR & ADC_SR_EOC); i++) {}
-    uint16_t adc = ADC1->DR;
-
-    ADC1->CR2 = 0;                             // power off (ADON + TSVREFE)
-    if (adc == 0) return 0;
-    // VDDA (mV) = vrefint_mv * 4096 / adc   (cal.vrefint_mv, runtime-calibrated).
-    // This is the clean analog supply — the battery-mod Schottky drop is NOT
-    // added here (see measure_battery_mv), so it's safe to scale the temp sensor.
-    return (uint16_t)((uint32_t)cal.vrefint_mv * 4096 / adc);
+    return (uint16_t)ADC1->DR;
 }
 
-// Pack voltage with the battery mod: the 1N5817 Schottky sits between the pack
-// and the 3V3 rail, so the true pack voltage is VDDA + the diode drop.
-uint16_t measure_battery_mv(void) {
-    uint16_t vdda = measure_vdda_mv();
-    return vdda + SHOTTKY_DROP_MV;
-}
-
-// Reads the internal temperature sensor (ADC ch 16).  Uses the just-measured
-// VDDA (from measure_vdda_mv) to convert the raw ADC value to voltage, then
-// applies the datasheet formula:
-//     T (°C) = (V25 - Vsense) / Avg_Slope + 25
-// with V25 = 1.43 V and Avg_Slope = 4.3 mV/°C (STM32F103 datasheet §5.3.22).
-// Returns temperature in whole degrees Celsius.
-int16_t measure_mcu_temp(void) {
-    uint16_t vdda_mv = measure_vdda_mv();       // need VDDA to scale the ADC
-    if (vdda_mv == 0) return -127;              // VDDA measurement failed
-
-    RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;
+// Power on ADC1, discard the initial conversions, then average ADC_SAMPLES
+// readings of ch17 (VREFINT) and ch16 (temp) in one cycle. Cache + timestamp.
+static void adc_sample(void) {
+    RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;    // ADC1 interface clock
     ADC1->CR2 = 0;
     ADC1->CR1 = 0;
+    // VREFINT + temp-sensor paths + EXTSEL=SWSTART(0b111) + EXTTRIG + power on.
+    // EXTSEL/EXTTRIG must select the software trigger, otherwise the SWSTART
+    // write is a no-op, EOC never sets, and DR reads 0.
     ADC1->CR2 = ADC_CR2_TSVREFE
               | ADC_CR2_EXTSEL
               | ADC_CR2_EXTTRIG
               | ADC_CR2_ADON;
-    delay(2);                                   // tSTAB
-
-    // Ch 16 = temperature sensor; 239.5-cycle sample time (≥17.1 µs required)
-    ADC1->SMPR1 = (ADC1->SMPR1 & ~ADC_SMPR1_SMP16) | ADC_SMPR1_SMP16;
-    ADC1->SQR3 = 16;
+    delay(2);                              // tSTAB / power-up settle
+    ADC1->SMPR1 = (ADC1->SMPR1 & ~(ADC_SMPR1_SMP17 | ADC_SMPR1_SMP16))
+                | ADC_SMPR1_SMP17 | ADC_SMPR1_SMP16;   // 247.5 cyc, both ch
     ADC1->SQR2 = 0;
-    ADC1->SQR1 = 0;
+    ADC1->SQR1 = 0;                        // scan length = 1 (channel set per read)
 
-    // Discard first conversion after power-on.
-    ADC1->CR2 |= ADC_CR2_SWSTART;
-    for (int i = 0; i < 100000 && !(ADC1->SR & ADC_SR_EOC); i++) {}
-    (void)ADC1->DR;
+    for (int i = 0; i < 3; i++) (void)adc_read_ch(17);   // discard dummies
+    uint32_t s17 = 0, s16 = 0;
+    for (int i = 0; i < ADC_SAMPLES; i++) {
+        s17 += adc_read_ch(17);
+        s16 += adc_read_ch(16);
+    }
+    ADC1->CR2 = 0;                         // power off
+    s_adc.vref_raw = (uint16_t)(s17 / ADC_SAMPLES);
+    s_adc.temp_raw = (uint16_t)(s16 / ADC_SAMPLES);
+    s_adc.ts_ms    = millis();
+    s_adc.valid    = true;
+}
 
-    // Actual conversion.
-    ADC1->CR2 |= ADC_CR2_SWSTART;
-    for (int i = 0; i < 100000 && !(ADC1->SR & ADC_SR_EOC); i++) {}
-    uint16_t adc = ADC1->DR;
+// Re-sample if we never have one or it's older than ADC_MAX_AGE_MS.
+static void adc_refresh_if_stale(void) {
+    if (!s_adc.valid || (millis() - s_adc.ts_ms) > ADC_MAX_AGE_MS) adc_sample();
+}
 
-    ADC1->CR2 = 0;                              // power off
-    if (adc == 0) return -127;
+// Clean analog supply (VDDA) in mV = vrefint_mv * 4096 / vref_raw. 0 on failure.
+static uint32_t adc_vdda_mv(void) {
+    if (!s_adc.valid || s_adc.vref_raw == 0) return 0;
+    return (uint32_t)cal.vrefint_mv * 4096UL / s_adc.vref_raw;
+}
 
-    // Vsense (mV) = vdda_mv * adc / 4096
-    // T = (1430 - Vsense) / 4.3 + 25   (all in mV, slope 4.3 mV/°C)
-    // Multiply by 10 to keep integer precision: T*10 = (14300 - Vs*10) / 43 + 250
-    int32_t vsense_x10 = (int32_t)vdda_mv * 10 * adc / 4096;
-    int32_t temp_x10   = (V25REF_MV*10 - vsense_x10) * 10 / 43 + 250;
-    // Add the per-board offset (cal.temp_offset_c) to zero the sensor against a
-    // reference thermometer (`set temp.offset`, range -12..+12).
+// Clean analog supply (VDDA) in mV, from the internal VREFINT (cal.vrefint_mv).
+uint16_t measure_vdda_mv(void) {
+    adc_refresh_if_stale();
+    uint32_t v = adc_vdda_mv();
+    return (uint16_t)(v > 65535 ? 65535 : v);
+}
+
+// Pack voltage with the battery mod: VDDA + the 1N5817 Schottky drop.
+uint16_t measure_battery_mv(void) {
+    adc_refresh_if_stale();
+    uint32_t vdda = adc_vdda_mv();
+    if (vdda == 0) return 0;
+    return (uint16_t)(vdda + SHOTTKY_DROP_MV);
+}
+
+// MCU die temperature (°C) from the internal sensor (ch16), scaled against the
+// clean VDDA. T = (V25 - Vsense) / 4.3 mV/°C + 25 (STM32F103 datasheet). -127 on
+// failure. Integer math (newlib-nano has no float printf).
+int16_t measure_mcu_temp(void) {
+    adc_refresh_if_stale();
+    uint32_t vdda = adc_vdda_mv();
+    if (vdda == 0) return -127;
+    int32_t vsense_x10 = (int32_t)s_adc.temp_raw * (int32_t)vdda * 10 / 4096;
+    int32_t temp_x10   = ((int32_t)V25REF_MV * 10 - vsense_x10) * 10 / 43 + 250;
     return (int16_t)((temp_x10 + 5) / 10) + cal.temp_offset_c;
 }
 

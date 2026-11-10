@@ -2,6 +2,18 @@
 
 All notable changes to SPECTER firmware are documented here.
 
+## [Unreleased]
+
+### Performance
+
+- **Combined ADC sampling**: VREFINT (`ch17`) and the temp sensor (`ch16`) are now
+  read in a **single** ADC power-on cycle, **averaged over 8 readings** to smooth
+  sampling noise, and cached with a timestamp. `battery`, `temp`, and the telemetry
+  path all share that one sample (refreshed only if >1 min old) — previously a
+  battery+temp read powered the ADC up/down 2-3 times. The cache stores the raw
+  readings, so `battery.charged` / `set battery.vref` recalibration applies to
+  subsequent reads immediately without a re-sample.
+
 ## [1.15.3]
 
 ### Analog calibration CLI (VREFINT + temperature offset)
