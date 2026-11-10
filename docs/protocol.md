@@ -41,7 +41,7 @@ sequenceDiagram
 | Field | Bits | Values |
 |-------|------|--------|
 | `route_type` | [1:0] | `0x00`=TRANSPORT_FLOOD · `0x01`=FLOOD · `0x02`=DIRECT · `0x03`=TRANSPORT_DIRECT |
-| `payload_type` | [5:2] | `0x04`=ADVERT · `0x01`=MSG · `0x06`=TRACE · … |
+| `payload_type` | [5:2] | `0x00`=REQ · `0x01`=RESPONSE · `0x02`=MSG · `0x03`=ACK · `0x04`=ADVERT · `0x05`=GRP_TXT · `0x06`=GRP_DATA · `0x07`=ANON_REQ · `0x08`=PATH · `0x09`=TRACE · `0x0F`=RAW |
 | `payload_version` | [7:6] | `0x00` (v1) |
 
 **SPECTER only processes `route_type = FLOOD (0x01)`.**
