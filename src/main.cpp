@@ -385,8 +385,10 @@ static int build_advert(uint8_t* buf) {
     int i = 0;
     // Header: ROUTE_FLOOD | (PAYLOAD_ADVERT << 2) = 0x11
     buf[i++] = (uint8_t)(ROUTE_FLOOD | (PAYLOAD_ADVERT << 2));
-    // Path length: 0 hops, 1-byte hashes
-    buf[i++] = 0x00;
+    // Path header: [hash_size_code(2) | hop_count(6)]. 0 hops; hash size from
+    // path.hash.mode (packed in loop_detect bits [3:2]; 0=1B, 1=2B, 2=3B).
+    uint8_t phm = (cfg.loop_detect >> 2) & 0x03;
+    buf[i++] = (uint8_t)(phm << 6);
 
     // --- Payload ---
     // pubkey (32 bytes)

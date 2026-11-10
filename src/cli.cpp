@@ -594,11 +594,27 @@ static void get_loop_detect(void) {
 }
 static void set_loop_detect(int argc, char** argv) {
     if (argc < 3) { out("Err: usage: set loop.detect off|minimal|moderate|strict"); return; }
-    if      (strcmp(argv[2], "off") == 0)      cfg.loop_detect = 0;
-    else if (strcmp(argv[2], "minimal") == 0)  cfg.loop_detect = 1;
-    else if (strcmp(argv[2], "moderate") == 0) cfg.loop_detect = 2;
-    else if (strcmp(argv[2], "strict") == 0)   cfg.loop_detect = 3;
+    // Preserve bits [3:2] (packed path.hash.mode) — only touch [1:0].
+    uint8_t keep = (uint8_t)(cfg.loop_detect & ~0x03);
+    if      (strcmp(argv[2], "off") == 0)      cfg.loop_detect = (uint8_t)(keep | 0);
+    else if (strcmp(argv[2], "minimal") == 0)  cfg.loop_detect = (uint8_t)(keep | 1);
+    else if (strcmp(argv[2], "moderate") == 0) cfg.loop_detect = (uint8_t)(keep | 2);
+    else if (strcmp(argv[2], "strict") == 0)   cfg.loop_detect = (uint8_t)(keep | 3);
     else { out("Err: off|minimal|moderate|strict"); return; }
+    prefs_save();
+    out("OK");
+}
+
+// path.hash.mode — advert path-hash size (0=1B, 1=2B, 2=3B). Packed into
+// loop_detect bits [3:2]. Affects only our own advert broadcasts, not relay.
+static void get_path_hash_mode(void) { getv_num((cfg.loop_detect >> 2) & 0x03); }
+static void set_path_hash_mode(int argc, char** argv) {
+    if (argc < 3) { out("Err: usage: set path.hash.mode 0|1|2"); return; }
+    int v = atoi(argv[2]);
+    if (v < 0 || v > 2) { out("Err: path.hash.mode must be 0, 1, or 2"); return; }
+    // Preserve bits [1:0] (loop.detect) — only touch [3:2].
+    uint8_t keep = (uint8_t)(cfg.loop_detect & ~0x0C);
+    cfg.loop_detect = (uint8_t)(keep | ((uint8_t)(v & 0x03) << 2));
     prefs_save();
     out("OK");
 }
@@ -815,6 +831,7 @@ static void handle_line(char* raw) {
         else if (!strcmp(g, "public.key"))  get_public_key();
         else if (!strcmp(g, "repeat"))      get_repeat();
         else if (!strcmp(g, "loop.detect")) get_loop_detect();
+        else if (!strcmp(g, "path.hash.mode")) get_path_hash_mode();
         else if (!strcmp(g, "txdelay"))     get_txdelay();
         else if (!strcmp(g, "direct.txdelay")) { char b[16]; snprintf(b,sizeof(b),"%u.%u",(unsigned)(cfg.direct_txdelay_x10/10),(unsigned)(cfg.direct_txdelay_x10%10)); getv(b); }
         else if (!strcmp(g, "dutycycle"))   get_dutycycle();
@@ -845,6 +862,7 @@ static void handle_line(char* raw) {
         else if (!strcmp(s, "advert.interval"))       set_zero_adv(argc, argv);
         else if (!strcmp(s, "repeat"))              set_repeat(argc, argv);
         else if (!strcmp(s, "loop.detect"))         set_loop_detect(argc, argv);
+        else if (!strcmp(s, "path.hash.mode"))      set_path_hash_mode(argc, argv);
         else if (!strcmp(s, "txdelay"))             set_txdelay(argc, argv, false);
         else if (!strcmp(s, "direct.txdelay"))      set_txdelay(argc, argv, true);
         else if (!strcmp(s, "dutycycle"))           set_dutycycle(argc, argv);

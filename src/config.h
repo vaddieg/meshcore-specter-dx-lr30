@@ -36,7 +36,10 @@ struct NodeConfig {
     uint8_t  flood_advert_h;   // 3-168 hours
     uint16_t zerohop_adv_min;  // 0 or 60-240 minutes
     uint8_t  repeat_en;        // 0/1
-    uint8_t  loop_detect;      // 0-3
+    uint8_t  loop_detect;      // 0-3 in bits [1:0] (off/minimal/moderate/strict).
+                               // bits [3:2] = path.hash.mode (0=1B, 1=2B, 2=3B advert
+                               // hash size). Packed here because the record is full
+                               // (60 B) and this keeps the flash layout/CRC intact.
     uint8_t  txdelay_x10;      // 0-20
     uint8_t  direct_txdelay_x10;
     uint8_t  dutycycle;        // 1-100 %

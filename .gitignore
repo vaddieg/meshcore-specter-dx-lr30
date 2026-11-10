@@ -16,3 +16,6 @@ logs/
 .AppleDouble
 .LSOverride
 ._*
+
+# MCP gateway tooling artifact (not project code)
+.mcp.json

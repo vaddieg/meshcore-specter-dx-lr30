@@ -54,7 +54,8 @@ Hardware constraints that shape the subset:
 | 24 | `get direct.txdelay` / `set <0-2>` | get/set | Default **0.3** (repeater) |
 | 25 | `get dutycycle` / `set <1-100>` | get/set | EU 868 MHz → default **10** (%), stricter than reference 50 % |
 | 26 | `get flood.max` / `set <0-64>` | get/set | Default **64** |
-| 27 | `erase` | op (serial) | Factory reset: clear preferences page + reboot. Destructive — but with USB as the only admin path, this is the recovery mechanism |
+| 27 | `get path.hash.mode` / `set <0-2>` | get/set | Advert path-hash size (0=1B, 1=2B, 2=3B). Default **0** (1-byte). Affects only our own advert broadcasts, not relay (official ≥1.14 forwards all sizes) |
+| 28 | `erase` | op (serial) | Factory reset: clear preferences page + reboot. Destructive — but with USB as the only admin path, this is the recovery mechanism |
 
 ### Explicitly NOT implemented (no hardware / not applicable to this role)
 
@@ -67,9 +68,9 @@ Hardware constraints that shape the subset:
 - `start ota`, `clkreboot` (no OTA mechanism yet)
 - `radio.fem.*` (no FEM on DX-LR30)
   (`radio.rxgain` **is** implemented — see the command reference below)
-- `path.hash.mode`, `flood.max.advert`, `flood.max.unscoped`, `rxdelay`,
+- `flood.max.advert`, `flood.max.unscoped`, `rxdelay`,
   `multi.acks`, `cad`, `agc.reset.interval`, `int.thresh`, `adc.multiplier`
-  (defer; hash size is fixed at 1 byte in current protocol impl)
+  (defer)
 - `neighbor.remove` (defer with `neighbors` cache work — trivial add later)
 
 ## 2. EU868 default settings summary
@@ -249,6 +250,7 @@ OK
 | `get dutycycle` / `set <1-100>` | `10` / `OK` | EU default 10 % |
 | `get radio.rxgain` / `set <on\|off>` | `off` / `OK` | RX gain (reg 0x08AC). **off** = power-saving (default, matches official; lower current), **on** = boosted (more sensitive, ~0.5 mA higher). Applied live (no reboot); persisted |
 | `get flood.max` / `set <0-64>` | `64` / `OK` | max flood hops |
+| `get path.hash.mode` / `set <0-2>` | `0` / `OK` | Advert path-hash size (0=1B, 1=2B, 2=3B). Affects only our adverts, not relay. Packed in the `loop.detect` byte's unused bits | 
 | `password <pw>` | `password now: <pw>` | official shortcut: sets the admin password (echoes it back to confirm) |
 | `set admin.password <pw>` | `OK (admin enabled)` | **enables mesh admin**; bare `set admin.password` (no value) clears it → `OK (admin disabled)`; see §3.6 |
 | `get admin.password` | password / `(empty)` | |
